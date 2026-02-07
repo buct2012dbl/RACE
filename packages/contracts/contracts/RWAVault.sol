@@ -39,6 +39,7 @@ contract RWAVault is Ownable, ReentrancyGuard {
 
     // Events
     event RWAMinted(address indexed token, address indexed owner, uint256 amount);
+    event RWARegistered(address indexed token, uint256 valuation, uint256 ltv);
     event RWAValuationUpdated(address indexed token, uint256 newValuation);
     event CollateralAdded(address indexed agent, address indexed token, uint256 amount);
     event CollateralRemoved(address indexed agent, address indexed token, uint256 amount);
@@ -153,6 +154,36 @@ contract RWAVault is Ownable, ReentrancyGuard {
      */
     function setKYCVerified(address user, bool verified) external onlyOwner {
         kycVerified[user] = verified;
+    }
+
+    /**
+     * @notice Register an external RWA token
+     * @param rwaToken RWA token address
+     * @param valuation Initial valuation in USDC
+     * @param ltv Loan-to-value ratio in basis points
+     */
+    function registerRWA(
+        address rwaToken,
+        uint256 valuation,
+        uint256 ltv
+    ) external onlyOwner {
+        require(rwaToken != address(0), "Invalid token address");
+        require(rwaRegistry[rwaToken].token == address(0), "Already registered");
+        require(ltv <= BASIS_POINTS, "Invalid LTV");
+
+        // Get token supply for amount
+        uint256 tokenAmount = IERC20(rwaToken).totalSupply();
+
+        rwaRegistry[rwaToken] = RWA({
+            token: rwaToken,
+            amount: tokenAmount,
+            valuation: valuation,
+            ltv: ltv,
+            validator: msg.sender,
+            lastUpdated: block.timestamp
+        });
+
+        emit RWARegistered(rwaToken, valuation, ltv);
     }
 
     /**

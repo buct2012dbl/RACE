@@ -117,6 +117,35 @@ contract AIAgent is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Add more collateral to the agent
+     * @param amount Amount of RWA tokens to add
+     */
+    function addCollateral(uint256 amount) external nonReentrant {
+        require(agentState.rwaCollateral != address(0), "Agent not initialized");
+        require(amount > 0, "Invalid amount");
+
+        // Transfer RWA collateral from sender
+        IERC20(agentState.rwaCollateral).transferFrom(msg.sender, address(this), amount);
+
+        // Update collateral amount
+        agentState.collateralAmount += amount;
+
+        // Recalculate borrowing capacity
+        uint256 newBorrowCapacity = IRWAVault(rwaVault).getBorrowingPower(
+            agentState.rwaCollateral,
+            agentState.collateralAmount
+        );
+
+        // Update available credit (total capacity minus already borrowed)
+        agentState.availableCredit = newBorrowCapacity - agentState.borrowedUSDC;
+
+        emit CollateralAdded(msg.sender, agentState.rwaCollateral, amount);
+    }
+
+    // Event for collateral added
+    event CollateralAdded(address indexed user, address indexed token, uint256 amount);
+
+    /**
      * @notice Execute autonomous investment decision
      */
     function makeInvestmentDecision(
@@ -142,38 +171,48 @@ contract AIAgent is Ownable, ReentrancyGuard {
     function _executeBorrowAndInvest(bytes memory params) internal {
         (
             uint256 borrowAmount,
-            address protocol,
-            address asset,
-            uint256 investmentAmount
+            address dexAddress,
+            address tokenOut,
+            uint256 minAmountOut
         ) = abi.decode(params, (uint256, address, address, uint256));
 
         require(borrowAmount <= agentState.availableCredit, "Insufficient credit");
 
-        // Borrow USDC
+        // Borrow USDC from lending pool
         ILendingPool(lendingPool).borrow(borrowAmount);
         agentState.borrowedUSDC += borrowAmount;
         agentState.availableCredit -= borrowAmount;
 
         emit BorrowExecuted(borrowAmount);
 
-        // Invest in protocol
-        IERC20(usdc).approve(protocol, investmentAmount);
-        uint256 shares = IYieldProtocol(protocol).deposit(investmentAmount, asset);
+        // Swap USDC for target token on DEX
+        IERC20(usdc).approve(dexAddress, borrowAmount);
+
+        uint256 amountOut = ISimpleDEX(dexAddress).swap(
+            usdc,
+            tokenOut,
+            borrowAmount,
+            minAmountOut
+        );
+
+        // Get entry price
+        uint256 entryPrice = ISimpleDEX(dexAddress).getPrice(usdc, tokenOut);
 
         // Record position
         Position memory newPosition = Position({
-            protocol: protocol,
-            asset: asset,
-            amount: shares,
-            entryPrice: _getPrice(asset),
+            protocol: dexAddress,
+            asset: tokenOut,
+            amount: amountOut,
+            entryPrice: entryPrice,
             timestamp: block.timestamp,
-            stopLoss: _calculateStopLoss(asset),
-            takeProfit: _calculateTakeProfit(asset)
+            stopLoss: 0,
+            takeProfit: 0
         });
 
         agentState.positions.push(newPosition);
+        agentState.totalAssets += amountOut;
 
-        emit PositionOpened(protocol, asset, shares);
+        emit PositionOpened(dexAddress, tokenOut, amountOut);
     }
 
     /**
@@ -249,6 +288,21 @@ contract AIAgent is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Get position by index
+     */
+    function getPosition(uint256 index) external view returns (Position memory) {
+        require(index < agentState.positions.length, "Invalid index");
+        return agentState.positions[index];
+    }
+
+    /**
+     * @notice Get all positions
+     */
+    function getAllPositions() external view returns (Position[] memory) {
+        return agentState.positions;
+    }
+
+    /**
      * @notice Calculate stop loss level
      */
     function _calculateStopLoss(address asset) internal view returns (uint256) {
@@ -295,4 +349,10 @@ interface ILendingPool {
 interface IYieldProtocol {
     function deposit(uint256 amount, address asset) external returns (uint256);
     function withdraw(uint256 shares, address asset) external returns (uint256);
+}
+
+interface ISimpleDEX {
+    function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut) external returns (uint256);
+    function getPrice(address token0, address token1) external view returns (uint256);
+    function getAmountOut(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256);
 }

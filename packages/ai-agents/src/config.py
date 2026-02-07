@@ -21,6 +21,14 @@ class Config:
     RWA_VAULT_ADDRESS = os.getenv("RWA_VAULT_ADDRESS")
     AI_AGENT_ADDRESS = os.getenv("AI_AGENT_ADDRESS")
     RISK_MANAGER_ADDRESS = os.getenv("RISK_MANAGER_ADDRESS")
+    MOCK_USDC_ADDRESS = os.getenv("MOCK_USDC_ADDRESS")
+    RWA_TOKEN_ADDRESS = os.getenv("RWA_TOKEN_ADDRESS")
+    LENDING_POOL_ADDRESS = os.getenv("LENDING_POOL_ADDRESS")
+
+    # DEX Addresses
+    SIMPLE_DEX_ADDRESS = os.getenv("SIMPLE_DEX_ADDRESS")
+    WETH_ADDRESS = os.getenv("WETH_ADDRESS")
+    WBTC_ADDRESS = os.getenv("WBTC_ADDRESS")
 
     # Supabase Database
     SUPABASE_URL = os.getenv("SUPABASE_URL")

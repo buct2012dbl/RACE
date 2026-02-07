@@ -56,7 +56,57 @@ class AIDecisionEngine:
         opportunities = self._identify_opportunities(market_data)
 
         # 4. Make decision based on reinforcement learning
-        if self._should_rebalance(agent_state, portfolio_performance, risk_report):
+        # If no positions yet and no borrowed funds, prioritize expanding
+        if len(agent_state.positions) == 0 and agent_state.borrowed_usdc == 0:
+            if self._should_expand_position(agent_state, opportunities, risk_report):
+                action = await self._determine_investment_action(agent_state, opportunities)
+            else:
+                action = Decision(
+                    action=InvestmentAction.HOLD,
+                    params={},
+                    risk_score=risk_report.overall_risk,
+                    expected_return=0.0,
+                    timestamp=timestamp,
+                    reasoning="No suitable opportunities found for initial investment"
+                )
+        # If we have borrowed funds but no position data, assume positions exist and HOLD
+        elif agent_state.borrowed_usdc > 0 and len(agent_state.positions) == 0:
+            action = Decision(
+                action=InvestmentAction.HOLD,
+                params={},
+                risk_score=risk_report.overall_risk,
+                expected_return=0.0,
+                timestamp=timestamp,
+                reasoning=f"Holding active positions (borrowed: {agent_state.borrowed_usdc} USDC)"
+            )
+        # If we have positions, let them mature before making changes
+        elif agent_state.positions and len(agent_state.positions) > 0:
+            newest_position_age = time.time() - max(p.timestamp for p in agent_state.positions)
+            if newest_position_age < 3600:  # Less than 1 hour old
+                action = Decision(
+                    action=InvestmentAction.HOLD,
+                    params={},
+                    risk_score=risk_report.overall_risk,
+                    expected_return=0.0,
+                    timestamp=timestamp,
+                    reasoning=f"Holding positions to mature (age: {int(newest_position_age/60)} minutes)"
+                )
+            elif self._should_rebalance(agent_state, portfolio_performance, risk_report):
+                action = await self._determine_rebalance_action(agent_state, opportunities)
+            elif self._should_expand_position(agent_state, opportunities, risk_report):
+                action = await self._determine_investment_action(agent_state, opportunities)
+            elif self._should_risk_off(agent_state, risk_report):
+                action = await self._determine_risk_reduction_action(agent_state)
+            else:
+                action = Decision(
+                    action=InvestmentAction.HOLD,
+                    params={},
+                    risk_score=risk_report.overall_risk,
+                    expected_return=0.0,
+                    timestamp=timestamp,
+                    reasoning="Portfolio is balanced and within risk parameters"
+                )
+        elif self._should_rebalance(agent_state, portfolio_performance, risk_report):
             action = await self._determine_rebalance_action(agent_state, opportunities)
         elif self._should_expand_position(agent_state, opportunities, risk_report):
             action = await self._determine_investment_action(agent_state, opportunities)
@@ -206,16 +256,26 @@ class AIDecisionEngine:
         risk_report: RiskReport
     ) -> bool:
         """Determine if portfolio needs rebalancing"""
-        # Check concentration
-        if risk_report.concentration_risk > config.MAX_CONCENTRATION:
+        # Don't rebalance if we have no positions or just borrowed
+        if not agent_state.positions or len(agent_state.positions) == 0:
+            return False
+
+        # Don't rebalance if positions are too new (less than 1 hour old)
+        if agent_state.positions:
+            newest_position_age = time.time() - max(p.timestamp for p in agent_state.positions)
+            if newest_position_age < 3600:  # 1 hour
+                return False
+
+        # Check concentration - only if we have multiple positions
+        if len(agent_state.positions) > 1 and risk_report.concentration_risk > config.MAX_CONCENTRATION:
             return True
 
-        # Check risk exposure
-        if risk_report.overall_risk > agent_state.config.risk_tolerance * 0.08:
+        # Check risk exposure - only if significantly high
+        if risk_report.overall_risk > 0.8:  # 80% risk threshold
             return True
 
-        # Check Sharpe ratio
-        if performance["sharpe_ratio"] < config.MIN_SHARPE_RATIO:
+        # Check Sharpe ratio - only if we have meaningful performance data
+        if performance["roi"] != 0 and performance["sharpe_ratio"] < config.MIN_SHARPE_RATIO:
             return True
 
         return False

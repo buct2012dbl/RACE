@@ -3,7 +3,8 @@ import asyncio
 import time
 from typing import Dict, List
 from web3 import Web3
-from .decision_engine import AIDecisionEngine
+from .simple_decision_engine import SimpleDecisionEngine
+from .market_simulator import MarketSimulator
 from .models import AgentState, MarketData, Decision
 from .config import config
 
@@ -13,7 +14,8 @@ class AgentOrchestrator:
     def __init__(self):
         """Initialize orchestrator"""
         self.w3 = Web3(Web3.HTTPProvider(config.WEB3_PROVIDER_URI))
-        self.decision_engine = AIDecisionEngine()
+        self.decision_engine = SimpleDecisionEngine()
+        self.market_simulator = MarketSimulator()
         self.active_agents: Dict[str, AgentState] = {}
 
     async def orchestrate_decision(self, agent_id: str) -> Dict:
@@ -54,60 +56,89 @@ class AgentOrchestrator:
 
     async def _fetch_agent_state(self, agent_id: str) -> AgentState:
         """Fetch agent state from blockchain"""
-        # In production, call actual contract
-        # For now, return mock data
         from .models import AgentConfig, Position
 
-        return AgentState(
-            config=AgentConfig(
-                owner="0x" + "0" * 40,
-                risk_tolerance=5,
-                target_roi=0.12,
-                max_drawdown=0.15,
-                strategies=["yield_farming", "lending"]
-            ),
-            rwa_collateral="0x" + "1" * 40,
-            collateral_amount=100000.0,
-            borrowed_usdc=50000.0,
-            available_credit=30000.0,
-            total_assets=55000.0,
-            positions=[]
-        )
+        try:
+            # Load AIAgent contract ABI
+            import json
+            import os
+
+            # Get contract ABI from artifacts - go up to project root
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            abi_path = os.path.join(
+                project_root,
+                "contracts/artifacts/contracts/AIAgent.sol/AIAgent.json"
+            )
+
+            if not os.path.exists(abi_path):
+                print(f"⚠️  ABI file not found at {abi_path}")
+                raise FileNotFoundError(f"ABI file not found: {abi_path}")
+
+            with open(abi_path, 'r') as f:
+                contract_json = json.load(f)
+                abi = contract_json['abi']
+
+            # Create contract instance
+            contract = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(agent_id),
+                abi=abi
+            )
+
+            # Fetch agent state from contract
+            print(f"Fetching agent state from {agent_id}...")
+            state = contract.functions.agentState().call()
+
+            # Parse the state tuple
+            # state = (config, rwaCollateral, collateralAmount, borrowedUSDC, availableCredit, totalAssets)
+            config_tuple = state[0]
+
+            agent_state = AgentState(
+                config=AgentConfig(
+                    owner=config_tuple[0],
+                    risk_tolerance=config_tuple[1],
+                    target_roi=config_tuple[2] / 10000.0,  # Convert from basis points
+                    max_drawdown=config_tuple[3] / 10000.0,  # Convert from basis points
+                    strategies=list(config_tuple[4])
+                ),
+                rwa_collateral=state[1],
+                collateral_amount=float(self.w3.from_wei(state[2], 'ether')),
+                borrowed_usdc=float(self.w3.from_wei(state[3], 'ether')),
+                available_credit=float(self.w3.from_wei(state[4], 'ether')),
+                total_assets=float(self.w3.from_wei(state[5], 'ether')),
+                positions=[]  # TODO: Parse positions if needed
+            )
+
+            print(f"✅ Agent state fetched:")
+            print(f"   Collateral: {agent_state.collateral_amount}")
+            print(f"   Borrowed: {agent_state.borrowed_usdc}")
+            print(f"   Available Credit: {agent_state.available_credit}")
+
+            return agent_state
+
+        except Exception as e:
+            print(f"❌ Error fetching agent state: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return default state on error
+            return AgentState(
+                config=AgentConfig(
+                    owner="0x" + "0" * 40,
+                    risk_tolerance=5,
+                    target_roi=0.12,
+                    max_drawdown=0.15,
+                    strategies=[]
+                ),
+                rwa_collateral="0x" + "0" * 40,
+                collateral_amount=0.0,
+                borrowed_usdc=0.0,
+                available_credit=0.0,
+                total_assets=0.0,
+                positions=[]
+            )
 
     async def _fetch_market_data(self) -> MarketData:
-        """Fetch market data from oracles"""
-        # In production, fetch from Chainlink, Pyth, etc.
-        return MarketData(
-            timestamp=int(time.time()),
-            prices={
-                "USDC": 1.0,
-                "ETH": 2500.0,
-                "BTC": 45000.0
-            },
-            yield_curves={
-                "Aave": {
-                    "asset": "USDC",
-                    "apy": 0.08,
-                    "volatility": 0.02,
-                    "tvl": 5_000_000_000
-                },
-                "Compound": {
-                    "asset": "USDC",
-                    "apy": 0.075,
-                    "volatility": 0.025,
-                    "tvl": 3_000_000_000
-                }
-            },
-            volatility={
-                "ETH": 0.6,
-                "BTC": 0.5
-            },
-            liquidity={
-                "ETH": 0.9,
-                "BTC": 0.95
-            },
-            treasury_yield=0.045
-        )
+        """Fetch market data from simulator"""
+        return self.market_simulator.get_market_data()
 
     def _generate_proof(self, decision: Decision) -> str:
         """Generate ZK proof for decision"""
@@ -164,10 +195,166 @@ class AgentOrchestrator:
 
     async def _execute_decision(self, agent_id: str, result: Dict):
         """Execute decision on blockchain"""
-        print(f"Executing decision on-chain for agent {agent_id}")
-        # In production, call smart contract
-        # For now, just log
-        print(f"Transaction would be sent with params: {result['decision']['params']}")
+        print(f"\n🤖 Executing decision on-chain for agent {agent_id}")
+
+        if not config.PRIVATE_KEY:
+            print("⚠️  No private key configured, skipping on-chain execution")
+            return
+
+        try:
+            import json
+            import os
+
+            # Load AIAgent contract ABI
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            abi_path = os.path.join(
+                project_root,
+                "contracts/artifacts/contracts/AIAgent.sol/AIAgent.json"
+            )
+
+            with open(abi_path, 'r') as f:
+                contract_json = json.load(f)
+                abi = contract_json['abi']
+
+            # Create contract instance
+            contract = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(agent_id),
+                abi=abi
+            )
+
+            # Get account from private key
+            account = self.w3.eth.account.from_key(config.PRIVATE_KEY)
+
+            # Map action to enum value
+            action_map = {
+                "HOLD": 0,
+                "BORROW_AND_INVEST": 1,
+                "REBALANCE": 2,
+                "TAKE_PROFIT": 3,
+                "STOP_LOSS": 4
+            }
+
+            action = result['decision']['action']
+            action_enum = action_map.get(action, 0)
+
+            print(f"Action: {action} (enum: {action_enum})")
+            print(f"Params: {result['decision']['params']}")
+
+            # Encode parameters based on action
+            params = self._encode_params(action, result['decision']['params'])
+
+            # Build transaction
+            nonce = self.w3.eth.get_transaction_count(account.address)
+
+            tx = contract.functions.makeInvestmentDecision(
+                action_enum,
+                params
+            ).build_transaction({
+                'from': account.address,
+                'nonce': nonce,
+                'gas': 1000000,
+                'gasPrice': self.w3.eth.gas_price
+            })
+
+            # Sign and send transaction
+            signed_tx = self.w3.eth.account.sign_transaction(tx, config.PRIVATE_KEY)
+            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+
+            print(f"✅ Transaction sent: {tx_hash.hex()}")
+
+            # Wait for receipt
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            print(f"✅ Transaction confirmed in block {receipt['blockNumber']}")
+
+        except Exception as e:
+            print(f"❌ Error executing decision on-chain: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _encode_params(self, action: str, params: Dict) -> bytes:
+        """Encode parameters for smart contract call"""
+        from eth_abi import encode
+
+        if action == "BORROW_AND_INVEST":
+            # New format: (uint256 borrowAmount, address dexAddress, address tokenOut, uint256 minAmountOut)
+            borrow_amount = self.w3.to_wei(params.get('borrow_amount', 0), 'ether')
+
+            # Get DEX address
+            dex_address = self.w3.to_checksum_address(config.SIMPLE_DEX_ADDRESS or '0x' + '0' * 40)
+
+            # Get token address based on token name
+            token_name = params.get('token', 'ETH')
+            if token_name == 'ETH':
+                token_out = self.w3.to_checksum_address(config.WETH_ADDRESS or '0x' + '0' * 40)
+            elif token_name == 'BTC':
+                token_out = self.w3.to_checksum_address(config.WBTC_ADDRESS or '0x' + '0' * 40)
+            else:
+                token_out = self.w3.to_checksum_address(config.WETH_ADDRESS or '0x' + '0' * 40)
+
+            # Get expected output amount from DEX
+            try:
+                # Load SimpleDEX ABI
+                import json
+                import os
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                dex_abi_path = os.path.join(
+                    project_root,
+                    "contracts/artifacts/contracts/SimpleDEX.sol/SimpleDEX.json"
+                )
+
+                with open(dex_abi_path, 'r') as f:
+                    dex_json = json.load(f)
+                    dex_abi = dex_json['abi']
+
+                # Create DEX contract instance
+                dex_contract = self.w3.eth.contract(
+                    address=dex_address,
+                    abi=dex_abi
+                )
+
+                # Get expected output amount
+                usdc_address = self.w3.to_checksum_address(config.MOCK_USDC_ADDRESS)
+                expected_out = dex_contract.functions.getAmountOut(
+                    usdc_address,
+                    token_out,
+                    borrow_amount
+                ).call()
+
+                # Calculate minimum with 2% slippage
+                min_amount_out = int(expected_out * 0.98)
+
+                print(f"Encoded params:")
+                print(f"  Borrow: {self.w3.from_wei(borrow_amount, 'ether')} USDC")
+                print(f"  DEX: {dex_address}")
+                print(f"  Token Out: {token_out} ({token_name})")
+                print(f"  Expected Out: {self.w3.from_wei(expected_out, 'ether')}")
+                print(f"  Min Amount Out: {self.w3.from_wei(min_amount_out, 'ether')} (2% slippage)")
+
+            except Exception as e:
+                print(f"Warning: Could not get expected output from DEX: {e}")
+                # Fallback: use a very low minimum (accept high slippage)
+                min_amount_out = 1  # Accept any amount
+                print(f"Using fallback min_amount_out: {min_amount_out}")
+
+            return encode(
+                ['uint256', 'address', 'address', 'uint256'],
+                [borrow_amount, dex_address, token_out, min_amount_out]
+            )
+        elif action == "REBALANCE":
+            # Encode (uint256[] closeIndices, uint256[] newAllocations)
+            close_indices = params.get('close_indices', [])
+            new_allocations = params.get('new_allocations', [])
+            return encode(
+                ['uint256[]', 'uint256[]'],
+                [close_indices, new_allocations]
+            )
+        elif action in ["TAKE_PROFIT", "STOP_LOSS"]:
+            # Encode (uint256 positionIndex)
+            position_index = params.get('position_index', 0)
+            return encode(['uint256'], [position_index])
+        else:
+            # HOLD or unknown action
+            return b''
 
     async def monitor_risk(self, agent_id: str):
         """Continuously monitor agent risk"""
