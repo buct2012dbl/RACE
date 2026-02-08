@@ -224,5 +224,7 @@ def run_server(host='0.0.0.0', port=5000, debug=False):
 
 
 if __name__ == '__main__':
-    # Run server in development mode on port 5001
-    run_server(port=5001, debug=True)
+    # Use PORT environment variable for production (Render), default to 5001 for local dev
+    port = int(os.environ.get('PORT', 5001))
+    debug = os.environ.get('FLASK_ENV') != 'production'
+    run_server(port=port, debug=debug)

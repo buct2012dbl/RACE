@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: race-ai-backend
+    env: python
+    region: oregon
+    plan: free
+    branch: main
+    rootDir: packages/ai-agents
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m src.api
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        value: 5000
+    healthCheckPath: /health
