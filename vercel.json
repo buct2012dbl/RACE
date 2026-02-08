@@ -1,11 +1,6 @@
 {
-  "version": 2,
-  "buildCommand": "cd packages/frontend && npm run build",
-  "outputDirectory": "packages/frontend/.next",
-  "installCommand": "npm install --prefix packages/frontend",
-  "framework": "nextjs",
-  "regions": ["iad1"],
-  "github": {
-    "silent": true
-  }
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "installCommand": "npm install",
+  "framework": "nextjs"
 }
