@@ -1,0 +1,12 @@
+# Minimal requirements for API server deployment
+# This file is used for Render deployment to avoid dependency conflicts
+
+# API Server
+flask==3.0.0
+flask-cors==4.0.0
+
+# HTTP Client for CoinGecko API
+requests==2.31.0
+
+# Utilities
+python-dotenv==1.0.0
