@@ -2,12 +2,13 @@ import { ethers } from "hardhat";
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  
-  const dexAddress = "0x7C303B4A9384965530d3e6a80378c27FDD9202bE";
-  const usdcAddress = "0x21a6e8e27bA20089c8176fB7606Cc9259b30834f";
-  const wethAddress = "0xC931BA8825A9Db6620a30bE42D3f1E554206a4e2";
-  const wbtcAddress = "0x5aa45CB5A0c55429caa8094261Da3Bfe607aF284";
-  
+
+  // Updated addresses (Feb 8, 2026)
+  const dexAddress = "0x75687780AD8B39Cc7bab179Dd127f672be04b9ED";
+  const usdcAddress = "0xfC40492859281e332abb84537398acF1FFc24560";
+  const wethAddress = "0x6e204AF9414C49032bC3851DbDe3fe5c42ac7585";
+  const wbtcAddress = "0xB79c2c7e30C64002A64Ab0375D36a7f701CAB84E";
+
   console.log("Creating DEX liquidity pools...\n");
   
   const dex = await ethers.getContractAt("SimpleDEX", dexAddress);

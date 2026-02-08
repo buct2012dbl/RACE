@@ -4,10 +4,10 @@ async function main() {
   const [deployer] = await ethers.getSigners();
   
   // Arc testnet addresses
-  const aiAgentAddress = "0xaf41Bb8fF013235aEf0D031f148E38c0FBe9984e";
-  const rwaTokenAddress = "0xdA9e9824Ce28779046f14E701f6FbeB04B02E617";
-  const rwaVaultAddress = "0x526f104E8039C3b981aB09a1A6340Ac3015E9146";
-  const simpleDEXAddress = "0x7D43BCbd5d956E6448d6F6650128797D0C135b83";
+  const aiAgentAddress = "0xa271d4888d44bb1f994A4c917dC9Fb54eaD01F4f";
+  const rwaTokenAddress = "0xcbc68a505be3Eb3bca598CA3E1B68a6Fbcdd2cF2";
+  const rwaVaultAddress = "0x42c168F005161F3BBf9F2eB8D4F9f253332556C3";
+  const simpleDEXAddress = "0x293E0a8f6bbEd6CeE135693c3F93C143f3110627";
   
   console.log("Initializing AI Agent on Arc testnet...\n");
   console.log("Deployer:", deployer.address);

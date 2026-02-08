@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseEther, formatEther } from "viem";
 import { Card } from "./ui/Card";
-import { Activity, TrendingUp, Shield, Wallet, Plus } from "lucide-react";
+import { Activity, TrendingUp, Shield, Wallet, Plus, BarChart3 } from "lucide-react";
+import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 // Contract addresses from environment variables
 const CONTRACTS = {
@@ -130,6 +131,10 @@ export function AgentDashboard() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [activeTab, setActiveTab] = useState<'positions' | 'chart'>('positions');
+  const [kLineData, setKLineData] = useState<any[]>([]);
+  const [priceDataLoading, setPriceDataLoading] = useState(false);
+  const [priceDataError, setPriceDataError] = useState<string | null>(null);
   const itemsPerPage = 5;
 
   // Read agent state from blockchain
@@ -145,6 +150,98 @@ export function AgentDashboard() {
     abi: AI_AGENT_ABI,
     functionName: "getAllPositions",
   });
+
+  // Fallback mock data generator (used only when API fails)
+  const generateMockKLineData = () => {
+    const data = [];
+    const basePrice = 45000; // Base price for BTC
+    let currentPrice = basePrice;
+
+    for (let i = 30; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+
+      // Simulate price movement
+      const change = (Math.random() - 0.5) * 2000;
+      currentPrice += change;
+
+      const open = currentPrice;
+      const close = currentPrice + (Math.random() - 0.5) * 1000;
+      const high = Math.max(open, close) + Math.random() * 500;
+      const low = Math.min(open, close) - Math.random() * 500;
+      const volume = Math.random() * 1000000;
+
+      data.push({
+        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        open: Math.round(open),
+        high: Math.round(high),
+        low: Math.round(low),
+        close: Math.round(close),
+        volume: Math.round(volume),
+      });
+    }
+
+    return data;
+  };
+
+  // Fetch real price data from backend API
+  useEffect(() => {
+    const fetchPriceData = async () => {
+      if (activeTab !== 'chart') return;
+
+      setPriceDataLoading(true);
+      setPriceDataError(null);
+
+      try {
+        // Determine which token to fetch based on positions
+        let symbol = 'BTC'; // Default to BTC
+        if (positionsData && (positionsData as any[]).length > 0) {
+          const firstPosition = (positionsData as any[])[0];
+          const tokenName = getTokenName(firstPosition.asset);
+          symbol = tokenName === 'ETH' ? 'ETH' : 'BTC';
+        }
+
+        // Fetch from backend API (adjust URL based on your setup)
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+        const response = await fetch(`${apiUrl}/api/prices/history?symbol=${symbol}&days=30`);
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch price data: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        if (!result.success || !result.data.ohlc) {
+          throw new Error('Invalid response format from API');
+        }
+
+        // Format data for the chart
+        const formattedData = result.data.ohlc.map((item: any) => {
+          const date = new Date(item.timestamp);
+          return {
+            date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+            open: Math.round(item.open),
+            high: Math.round(item.high),
+            low: Math.round(item.low),
+            close: Math.round(item.close),
+            volume: 0, // CoinGecko OHLC doesn't include volume
+          };
+        });
+
+        setKLineData(formattedData);
+      } catch (error) {
+        console.error('Error fetching price data:', error);
+        setPriceDataError(error instanceof Error ? error.message : 'Failed to fetch price data');
+
+        // Fallback to mock data on error
+        setKLineData(generateMockKLineData());
+      } finally {
+        setPriceDataLoading(false);
+      }
+    };
+
+    fetchPriceData();
+  }, [activeTab, positionsData]);
 
   // Debug logging
   useEffect(() => {
@@ -392,16 +489,50 @@ export function AgentDashboard() {
           </span>
         </div>
 
-        {!positionsData || (positionsData as any[]).length === 0 ? (
-          <div className="text-center py-8">
-            <p className="text-gray-400">No active positions yet</p>
-            <p className="text-sm text-gray-500 mt-2">
-              The AI agent will automatically invest when conditions are favorable
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="space-y-3">
+        {/* Tab Navigation */}
+        <div className="flex gap-2 mb-6 border-b border-white/10">
+          <button
+            onClick={() => setActiveTab('positions')}
+            className={`px-4 py-2 font-medium transition-colors relative ${
+              activeTab === 'positions'
+                ? 'text-purple-400'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Positions
+            {activeTab === 'positions' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-400" />
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('chart')}
+            className={`px-4 py-2 font-medium transition-colors relative flex items-center gap-2 ${
+              activeTab === 'chart'
+                ? 'text-purple-400'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <BarChart3 className="w-4 h-4" />
+            Price Chart
+            {activeTab === 'chart' && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-400" />
+            )}
+          </button>
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'positions' ? (
+          // Positions Tab Content
+          !positionsData || (positionsData as any[]).length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-gray-400">No active positions yet</p>
+              <p className="text-sm text-gray-500 mt-2">
+                The AI agent will automatically invest when conditions are favorable
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-3">
               {(() => {
                 const positions = positionsData as any[];
                 const totalPages = Math.ceil(positions.length / itemsPerPage);
@@ -413,7 +544,20 @@ export function AgentDashboard() {
                   const tokenAddress = position.asset as string;
                   const tokenName = getTokenName(tokenAddress);
                   const amount = Number(formatEther(position.amount || BigInt(0)));
-                  const entryPrice = Number(formatEther(position.entryPrice || BigInt(0)));
+
+                  // DEX prices are stored as raw values (not wei)
+                  // These represent: (reserve_token * 1e18) / reserve_USDC
+                  // Lower raw price = worse for long position (stop loss)
+                  // Higher raw price = better for long position (take profit)
+                  const rawEntryPrice = Number(position.entryPrice || BigInt(0));
+                  const rawStopLoss = Number(position.stopLoss || BigInt(0));
+                  const rawTakeProfit = Number(position.takeProfit || BigInt(0));
+
+                  // For display, show the percentage change on raw prices
+                  // Stop loss is -10% on raw price, take profit is +20% on raw price
+                  const stopLossPct = rawEntryPrice > 0 ? ((rawStopLoss - rawEntryPrice) / rawEntryPrice * 100) : 0;
+                  const takeProfitPct = rawEntryPrice > 0 ? ((rawTakeProfit - rawEntryPrice) / rawEntryPrice * 100) : 0;
+
                   const timestamp = Number(position.timestamp || BigInt(0));
                   const date = new Date(timestamp * 1000);
 
@@ -433,7 +577,7 @@ export function AgentDashboard() {
                         </div>
                         <div className="text-right">
                           <p className="text-white font-semibold">{amount.toFixed(4)} {tokenName}</p>
-                          <p className="text-sm text-gray-400">Entry: ${entryPrice.toFixed(2)}</p>
+                          <p className="text-sm text-gray-400">Entry Price (DEX)</p>
                         </div>
                       </div>
                       <div className="grid grid-cols-3 gap-4 pt-3 border-t border-white/10">
@@ -444,16 +588,16 @@ export function AgentDashboard() {
                         <div>
                           <p className="text-xs text-gray-400">Stop Loss</p>
                           <p className="text-sm text-white">
-                            {position.stopLoss && Number(position.stopLoss) > 0
-                              ? `$${Number(formatEther(position.stopLoss)).toFixed(2)}`
+                            {rawStopLoss > 0
+                              ? `${stopLossPct.toFixed(1)}%`
                               : 'Not set'}
                           </p>
                         </div>
                         <div>
                           <p className="text-xs text-gray-400">Take Profit</p>
                           <p className="text-sm text-white">
-                            {position.takeProfit && Number(position.takeProfit) > 0
-                              ? `$${Number(formatEther(position.takeProfit)).toFixed(2)}`
+                            {rawTakeProfit > 0
+                              ? `${takeProfitPct > 0 ? '+' : ''}${takeProfitPct.toFixed(1)}%`
                               : 'Not set'}
                           </p>
                         </div>
@@ -508,7 +652,142 @@ export function AgentDashboard() {
               );
             })()}
           </>
-        )}
+        )
+      ) : (
+        // Chart Tab Content
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-lg font-semibold text-white">Real Market Price History</h4>
+              <p className="text-sm text-gray-400 mt-1">30-day candlestick chart from CoinGecko</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Asset:</span>
+              <span className="px-3 py-1 bg-purple-500/20 text-purple-400 rounded-lg text-sm font-medium">
+                {positionsData && (positionsData as any[]).length > 0
+                  ? getTokenName((positionsData as any[])[0].asset)
+                  : 'BTC'}
+              </span>
+            </div>
+          </div>
+
+          {/* Loading State */}
+          {priceDataLoading && (
+            <div className="bg-white/5 border border-white/10 rounded-lg p-8 text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-400 mx-auto mb-4"></div>
+              <p className="text-gray-400">Loading real market data...</p>
+            </div>
+          )}
+
+          {/* Error State */}
+          {priceDataError && !priceDataLoading && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4">
+              <p className="text-red-400 text-sm">
+                ⚠️ {priceDataError}
+              </p>
+              <p className="text-gray-400 text-xs mt-2">
+                Showing fallback data. Make sure the backend API is running.
+              </p>
+            </div>
+          )}
+
+          {/* K-Line Chart */}
+          {!priceDataLoading && kLineData.length > 0 && (
+            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+              <ResponsiveContainer width="100%" height={400}>
+                <ComposedChart data={kLineData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis
+                  dataKey="date"
+                  stroke="#9CA3AF"
+                  style={{ fontSize: '12px' }}
+                />
+                <YAxis
+                  stroke="#9CA3AF"
+                  style={{ fontSize: '12px' }}
+                  domain={['dataMin - 1000', 'dataMax + 1000']}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#1F2937',
+                    border: '1px solid #374151',
+                    borderRadius: '8px',
+                    color: '#fff'
+                  }}
+                  formatter={(value: any) => [`$${value.toLocaleString()}`, '']}
+                />
+                <Legend
+                  wrapperStyle={{ color: '#9CA3AF' }}
+                />
+                <Bar
+                  dataKey="volume"
+                  fill="#8B5CF6"
+                  opacity={0.3}
+                  name="Volume"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="high"
+                  stroke="#10B981"
+                  strokeWidth={2}
+                  dot={false}
+                  name="High"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="low"
+                  stroke="#EF4444"
+                  strokeWidth={2}
+                  dot={false}
+                  name="Low"
+                />
+                <Line
+                  type="monotone"
+                  dataKey="close"
+                  stroke="#3B82F6"
+                  strokeWidth={3}
+                  dot={false}
+                  name="Close"
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Price Statistics */}
+          {!priceDataLoading && kLineData.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+              <p className="text-xs text-gray-400 mb-1">Current Price</p>
+              <p className="text-lg font-bold text-white">
+                ${kLineData[kLineData.length - 1]?.close.toLocaleString()}
+              </p>
+              <p className="text-xs text-green-400 mt-1">
+                +{((kLineData[kLineData.length - 1]?.close - kLineData[0]?.close) / kLineData[0]?.close * 100).toFixed(2)}%
+              </p>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+              <p className="text-xs text-gray-400 mb-1">24h High</p>
+              <p className="text-lg font-bold text-green-400">
+                ${Math.max(...kLineData.map(d => d.high)).toLocaleString()}
+              </p>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+              <p className="text-xs text-gray-400 mb-1">24h Low</p>
+              <p className="text-lg font-bold text-red-400">
+                ${Math.min(...kLineData.map(d => d.low)).toLocaleString()}
+              </p>
+            </div>
+            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
+              <p className="text-xs text-gray-400 mb-1">24h Volume</p>
+              <p className="text-lg font-bold text-purple-400">
+                ${(kLineData[kLineData.length - 1]?.volume / 1000).toFixed(0)}K
+              </p>
+            </div>
+            </div>
+          )}
+        </div>
+      )}
       </Card>
 
       {/* Deposit Modal */}

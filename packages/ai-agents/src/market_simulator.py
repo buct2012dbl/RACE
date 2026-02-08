@@ -28,10 +28,10 @@ class MarketSimulator:
         # Price history for trend calculation
         self.price_history = {token: [price] for token, price in self.base_prices.items()}
 
-        # Volatility parameters
+        # Volatility parameters (increased for more dramatic movements)
         self.volatility = {
-            "ETH": 0.6,  # 60% annualized volatility
-            "BTC": 0.5,  # 50% annualized volatility
+            "ETH": 0.8,  # 80% annualized volatility (increased from 60%)
+            "BTC": 0.7,  # 70% annualized volatility (increased from 50%)
         }
 
         # Liquidity scores
@@ -41,6 +41,16 @@ class MarketSimulator:
         }
 
         self.last_update = time.time()
+
+        # Add trend direction for more realistic movements
+        self.trend_direction = {
+            "ETH": random.choice([-1, 1]),  # -1 for down, 1 for up
+            "BTC": random.choice([-1, 1]),
+        }
+        self.trend_strength = {
+            "ETH": random.uniform(0.5, 1.5),
+            "BTC": random.uniform(0.5, 1.5),
+        }
 
     def get_market_data(self) -> MarketData:
         """Get current market data with simulated price movements"""
@@ -73,7 +83,7 @@ class MarketSimulator:
         )
 
     def _update_prices(self):
-        """Update prices with realistic random walk"""
+        """Update prices with realistic random walk and trends"""
         current_time = time.time()
         time_elapsed = current_time - self.last_update
 
@@ -90,22 +100,23 @@ class MarketSimulator:
             current_price = self.base_prices[token]
             volatility = self.volatility[token]
 
-            # Drift (slight upward bias for crypto)
-            drift = 0.10 / (365 * 24 * 3600)  # 10% annual drift
+            # Drift with trend direction (more dramatic movements)
+            base_drift = 0.15 / (365 * 24 * 3600)  # 15% annual drift (increased from 10%)
+            trend_drift = base_drift * self.trend_direction[token] * self.trend_strength[token]
 
-            # Random shock (Wiener process)
+            # Random shock (Wiener process) - amplified for testing
             dt = time_elapsed
-            dW = random.gauss(0, math.sqrt(dt))
+            dW = random.gauss(0, math.sqrt(dt)) * 2.0  # Amplified by 2x for more dramatic moves
 
             # Price change
-            price_change = current_price * (drift * dt + volatility * dW / math.sqrt(365 * 24 * 3600))
+            price_change = current_price * (trend_drift * dt + volatility * dW / math.sqrt(365 * 24 * 3600))
 
             # Update price
             new_price = current_price + price_change
 
-            # Add some bounds to prevent extreme prices
-            min_price = self.base_prices[token] * 0.5  # Max 50% drop
-            max_price = self.base_prices[token] * 2.0  # Max 100% gain
+            # Add some bounds to prevent extreme prices (wider bounds for testing)
+            min_price = self.base_prices[token] * 0.3  # Max 70% drop (was 50%)
+            max_price = self.base_prices[token] * 3.0  # Max 200% gain (was 100%)
 
             new_price = max(min_price, min(max_price, new_price))
 
@@ -115,6 +126,12 @@ class MarketSimulator:
             self.price_history[token].append(new_price)
             if len(self.price_history[token]) > 100:
                 self.price_history[token].pop(0)
+
+            # Occasionally change trend direction (10% chance per update)
+            if random.random() < 0.1:
+                self.trend_direction[token] *= -1
+                self.trend_strength[token] = random.uniform(0.5, 1.5)
+                print(f"📊 {token} trend changed to {'UP' if self.trend_direction[token] > 0 else 'DOWN'} (strength: {self.trend_strength[token]:.2f})")
 
         self.last_update = current_time
 

@@ -195,8 +195,12 @@ contract AIAgent is Ownable, ReentrancyGuard {
             minAmountOut
         );
 
-        // Get entry price
-        uint256 entryPrice = ISimpleDEX(dexAddress).getPrice(usdc, tokenOut);
+        // Get entry price (USDC per token)
+        uint256 entryPrice = ISimpleDEX(dexAddress).getPrice(tokenOut, usdc);
+
+        // Calculate stop loss (10% below entry) and take profit (20% above entry)
+        uint256 stopLossPrice = (entryPrice * 90) / 100;  // -10%
+        uint256 takeProfitPrice = (entryPrice * 120) / 100;  // +20%
 
         // Record position
         Position memory newPosition = Position({
@@ -205,8 +209,8 @@ contract AIAgent is Ownable, ReentrancyGuard {
             amount: amountOut,
             entryPrice: entryPrice,
             timestamp: block.timestamp,
-            stopLoss: 0,
-            takeProfit: 0
+            stopLoss: stopLossPrice,
+            takeProfit: takeProfitPrice
         });
 
         agentState.positions.push(newPosition);
@@ -256,21 +260,38 @@ contract AIAgent is Ownable, ReentrancyGuard {
 
         Position memory position = agentState.positions[index];
 
-        // Withdraw from protocol
-        uint256 withdrawn = IYieldProtocol(position.protocol).withdraw(
+        // Swap tokens back to USDC on DEX
+        IERC20(position.asset).approve(position.protocol, position.amount);
+
+        uint256 usdcReceived = ISimpleDEX(position.protocol).swap(
+            position.asset,
+            usdc,
             position.amount,
-            position.asset
+            0  // Accept any amount (in production, calculate proper slippage)
         );
 
-        // Calculate PnL
-        uint256 currentPrice = _getPrice(position.asset);
-        int256 pnl = int256(withdrawn) - int256(position.amount * position.entryPrice / 1e18);
+        // Repay borrowed USDC to lending pool
+        uint256 repayAmount = usdcReceived;
+        if (repayAmount > agentState.borrowedUSDC) {
+            repayAmount = agentState.borrowedUSDC;
+        }
+
+        IERC20(usdc).approve(lendingPool, repayAmount);
+        ILendingPool(lendingPool).repay(repayAmount);
+
+        // Update state
+        agentState.borrowedUSDC -= repayAmount;
+        agentState.availableCredit += repayAmount;
+        agentState.totalAssets -= position.amount;
+
+        // Calculate PnL (simplified)
+        int256 pnl = int256(usdcReceived) - int256(position.amount * position.entryPrice / 1e18);
 
         // Remove position (swap with last and pop)
         agentState.positions[index] = agentState.positions[agentState.positions.length - 1];
         agentState.positions.pop();
 
-        emit PositionClosed(position.protocol, position.asset, withdrawn, pnl);
+        emit PositionClosed(position.protocol, position.asset, usdcReceived, pnl);
     }
 
     /**

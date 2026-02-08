@@ -36,6 +36,7 @@ contract SimpleDEX is Ownable, ReentrancyGuard {
     event LiquidityAdded(bytes32 indexed poolId, address indexed provider, uint256 amount0, uint256 amount1, uint256 liquidity);
     event LiquidityRemoved(bytes32 indexed poolId, address indexed provider, uint256 amount0, uint256 amount1, uint256 liquidity);
     event Swap(bytes32 indexed poolId, address indexed trader, address tokenIn, uint256 amountIn, uint256 amountOut);
+    event ReservesAdjusted(bytes32 indexed poolId, uint256 newReserve0, uint256 newReserve1);
 
     constructor() Ownable(msg.sender) {}
 
@@ -231,6 +232,41 @@ contract SimpleDEX is Ownable, ReentrancyGuard {
         } else {
             return (pool.reserve1, pool.reserve0);
         }
+    }
+
+    /**
+     * @notice Adjust pool reserves to match real market prices (admin only)
+     * @dev This function allows the owner to synchronize DEX prices with external market prices
+     * @param token0 First token address
+     * @param token1 Second token address
+     * @param newReserve0 New reserve amount for token0
+     * @param newReserve1 New reserve amount for token1
+     */
+    function adjustReserves(
+        address token0,
+        address token1,
+        uint256 newReserve0,
+        uint256 newReserve1
+    ) external onlyOwner {
+        require(newReserve0 > 0 && newReserve1 > 0, "Invalid reserves");
+
+        bytes32 poolId = getPoolId(token0, token1);
+        Pool storage pool = pools[poolId];
+        require(pool.exists, "Pool doesn't exist");
+
+        // Determine which token is token0 in the pool
+        bool isToken0 = token0 == pool.token0;
+
+        // Update reserves in the correct order
+        if (isToken0) {
+            pool.reserve0 = newReserve0;
+            pool.reserve1 = newReserve1;
+        } else {
+            pool.reserve0 = newReserve1;
+            pool.reserve1 = newReserve0;
+        }
+
+        emit ReservesAdjusted(poolId, pool.reserve0, pool.reserve1);
     }
 
     // Helper functions

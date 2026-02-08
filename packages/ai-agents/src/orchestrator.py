@@ -1,12 +1,13 @@
 """Agent orchestrator for managing multiple AI agents"""
 import asyncio
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 from web3 import Web3
 from .simple_decision_engine import SimpleDecisionEngine
 from .market_simulator import MarketSimulator
 from .models import AgentState, MarketData, Decision
 from .config import config
+from .price_service import get_price_service
 
 class AgentOrchestrator:
     """Orchestrates multiple AI agents"""
@@ -17,6 +18,13 @@ class AgentOrchestrator:
         self.decision_engine = SimpleDecisionEngine()
         self.market_simulator = MarketSimulator()
         self.active_agents: Dict[str, AgentState] = {}
+        self.price_service = get_price_service()
+
+        # Token address to symbol mapping
+        self.token_address_to_symbol = {
+            config.WETH_ADDRESS.lower(): "ETH",
+            config.WBTC_ADDRESS.lower(): "BTC",
+        }
 
     async def orchestrate_decision(self, agent_id: str) -> Dict:
         """
@@ -38,7 +46,8 @@ class AgentOrchestrator:
         decision = await self.decision_engine.evaluate(
             agent_state,
             market_data,
-            int(time.time())
+            int(time.time()),
+            orchestrator=self  # Pass orchestrator for DEX price fetching
         )
 
         # Generate proof (simplified - in production use ZK proofs)
@@ -92,6 +101,24 @@ class AgentOrchestrator:
             # state = (config, rwaCollateral, collateralAmount, borrowedUSDC, availableCredit, totalAssets)
             config_tuple = state[0]
 
+            # Fetch positions
+            positions = []
+            try:
+                positions_data = contract.functions.getAllPositions().call()
+                for pos in positions_data:
+                    positions.append(Position(
+                        protocol=pos[0],
+                        asset=pos[1],
+                        amount=float(self.w3.from_wei(pos[2], 'ether')),
+                        entry_price=float(pos[3]) / 1e18,  # Price values ARE in wei (scaled by 10^18), unscale them
+                        timestamp=pos[4],
+                        stop_loss=float(pos[5]) / 1e18,  # Price values ARE in wei (scaled by 10^18), unscale them
+                        take_profit=float(pos[6]) / 1e18  # Price values ARE in wei (scaled by 10^18), unscale them
+                    ))
+                print(f"   Positions: {len(positions)}")
+            except Exception as e:
+                print(f"   Warning: Could not fetch positions: {e}")
+
             agent_state = AgentState(
                 config=AgentConfig(
                     owner=config_tuple[0],
@@ -105,7 +132,7 @@ class AgentOrchestrator:
                 borrowed_usdc=float(self.w3.from_wei(state[3], 'ether')),
                 available_credit=float(self.w3.from_wei(state[4], 'ether')),
                 total_assets=float(self.w3.from_wei(state[5], 'ether')),
-                positions=[]  # TODO: Parse positions if needed
+                positions=positions
             )
 
             print(f"✅ Agent state fetched:")
@@ -139,6 +166,84 @@ class AgentOrchestrator:
     async def _fetch_market_data(self) -> MarketData:
         """Fetch market data from simulator"""
         return self.market_simulator.get_market_data()
+
+    def get_market_price(self, token_symbol: str) -> Optional[float]:
+        """
+        Get current market price from CoinGecko for a token
+
+        Args:
+            token_symbol: Token symbol (e.g., "BTC", "ETH")
+
+        Returns:
+            Current market price in USD, or None if fetch fails
+        """
+        try:
+            price = self.price_service.get_current_price(token_symbol)
+            if price:
+                print(f"Market price for {token_symbol}: ${price:,.2f}")
+            return price
+        except Exception as e:
+            print(f"Warning: Could not get market price for {token_symbol}: {e}")
+            return None
+
+    def get_dex_price(self, token_address: str) -> float:
+        """
+        Get current price for a token, preferring CoinGecko with DEX as fallback
+
+        Args:
+            token_address: Address of the token to get price for
+
+        Returns:
+            Current price in USD (NOT scaled, e.g., 69325 for BTC)
+        """
+        # Try to get market price from CoinGecko first
+        token_symbol = self.token_address_to_symbol.get(token_address.lower())
+        if token_symbol:
+            market_price = self.get_market_price(token_symbol)
+            if market_price:
+                # Return unscaled price in USD
+                return market_price
+
+        # Fallback to DEX price
+        print(f"Falling back to DEX price for {token_address}")
+        dex_price_scaled = self._get_dex_price_from_contract(token_address)
+        # DEX returns price scaled by 10^18, so divide to get USD price
+        return dex_price_scaled / 1e18 if dex_price_scaled > 0 else 0.0
+
+    def _get_dex_price_from_contract(self, token_address: str) -> float:
+        """
+        Get current price from DEX contract for a token
+
+        Args:
+            token_address: Address of the token to get price for
+
+        Returns:
+            Current DEX price (USDC per token, scaled by 10^18)
+            Note: Caller should divide by 1e18 to get USD price
+        """
+        try:
+            import json
+
+            # Load DEX ABI
+            with open('../contracts/artifacts/contracts/SimpleDEX.sol/SimpleDEX.json') as f:
+                dex_abi = json.load(f)['abi']
+
+            # Get DEX contract
+            dex_address = self.w3.to_checksum_address(config.SIMPLE_DEX_ADDRESS)
+            dex_contract = self.w3.eth.contract(address=dex_address, abi=dex_abi)
+
+            # Get USDC address
+            usdc_address = self.w3.to_checksum_address(config.MOCK_USDC_ADDRESS)
+            token_address = self.w3.to_checksum_address(token_address)
+
+            # Get price from DEX (returns USDC per token, scaled by 10^18)
+            price = dex_contract.functions.getPrice(usdc_address, token_address).call()
+
+            return float(price)
+
+        except Exception as e:
+            print(f"Warning: Could not get DEX price for {token_address}: {e}")
+            return 0.0
 
     def _generate_proof(self, decision: Decision) -> str:
         """Generate ZK proof for decision"""

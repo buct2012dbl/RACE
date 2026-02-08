@@ -28,13 +28,14 @@ class LLMDecisionEngine:
         self,
         agent_state: AgentState,
         market_data: MarketData,
-        timestamp: int
+        timestamp: int,
+        orchestrator=None  # Optional orchestrator for real price fetching
     ) -> Decision:
         """
         Use LLM to evaluate current state and make investment decision
         """
-        # 1. Prepare context for LLM
-        context = self._prepare_context(agent_state, market_data)
+        # 1. Prepare context for LLM (with real prices if orchestrator available)
+        context = self._prepare_context(agent_state, market_data, orchestrator)
 
         # 2. Create prompt for LLM
         prompt = self._create_decision_prompt(context, agent_state)
@@ -47,22 +48,69 @@ class LLMDecisionEngine:
 
         return decision
 
-    def _prepare_context(self, agent_state: AgentState, market_data: MarketData) -> Dict:
-        """Prepare context data for LLM"""
+    def _prepare_context(self, agent_state: AgentState, market_data: MarketData, orchestrator=None) -> Dict:
+    def _prepare_context(self, agent_state: AgentState, market_data: MarketData, orchestrator=None) -> Dict:
+        """Prepare context data for LLM with real market prices when available"""
         # Calculate portfolio metrics
         portfolio_value = agent_state.collateral_amount + agent_state.total_assets
         utilization = agent_state.borrowed_usdc / (agent_state.borrowed_usdc + agent_state.available_credit) if (agent_state.borrowed_usdc + agent_state.available_credit) > 0 else 0
         collateral_ratio = agent_state.collateral_amount / agent_state.borrowed_usdc if agent_state.borrowed_usdc > 0 else float('inf')
 
+        # Get real market prices if orchestrator available
+        real_prices = {}
+        if orchestrator:
+            try:
+                btc_price = orchestrator.get_market_price("BTC")
+                eth_price = orchestrator.get_market_price("ETH")
+                if btc_price:
+                    real_prices["BTC"] = btc_price
+                if eth_price:
+                    real_prices["ETH"] = eth_price
+            except Exception as e:
+                print(f"Warning: Could not fetch real market prices: {e}")
+
+        # Use real prices if available, otherwise fall back to market_data
+        prices = {**market_data.prices, **real_prices}
+
         # Get available opportunities
         opportunities = []
-        for token, price in market_data.prices.items():
+        for token, price in prices.items():
             if token != "USDC":
                 opportunities.append({
                     "token": token,
                     "price": price,
-                    "potential_return": self._estimate_return(token, market_data)
+                    "potential_return": self._estimate_return(token, market_data),
+                    "source": "CoinGecko" if token in real_prices else "Simulator"
                 })
+
+        # Analyze positions for take profit/stop loss opportunities
+        position_analysis = []
+        for idx, pos in enumerate(agent_state.positions):
+            token_name = self._get_token_name(pos.asset)
+
+            # Get current price - prefer real price from orchestrator
+            current_price = None
+            if orchestrator:
+                current_price = orchestrator.get_dex_price(pos.asset)
+
+            # Fallback to market data
+            if current_price is None or current_price == 0:
+                current_price = prices.get(token_name, 0)
+
+            entry_price = pos.entry_price
+            pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+
+            position_analysis.append({
+                "index": idx,
+                "token": token_name,
+                "entry_price": entry_price,
+                "current_price": current_price,
+                "pnl_percent": pnl_pct,
+                "stop_loss": pos.stop_loss,
+                "take_profit": pos.take_profit,
+                "should_stop_loss": current_price <= pos.stop_loss if pos.stop_loss > 0 else False,
+                "should_take_profit": current_price >= pos.take_profit if pos.take_profit > 0 else False
+            })
 
         return {
             "portfolio": {
@@ -80,11 +128,22 @@ class LLMDecisionEngine:
                 "max_drawdown": agent_state.config.max_drawdown
             },
             "market": {
-                "prices": market_data.prices,
+                "prices": prices,
                 "opportunities": opportunities,
                 "treasury_yield": market_data.treasury_yield
-            }
+            },
+            "positions": position_analysis
         }
+
+    def _get_token_name(self, asset_address: str) -> str:
+        """Get token name from address"""
+        from .config import config
+        address_to_token = {
+            config.WETH_ADDRESS.lower() if config.WETH_ADDRESS else '': 'ETH',
+            config.WBTC_ADDRESS.lower() if config.WBTC_ADDRESS else '': 'BTC',
+            config.MOCK_USDC_ADDRESS.lower() if config.MOCK_USDC_ADDRESS else '': 'USDC',
+        }
+        return address_to_token.get(asset_address.lower(), 'Unknown')
 
     def _estimate_return(self, token: str, market_data: MarketData) -> float:
         """Estimate potential return for a token"""
@@ -99,6 +158,21 @@ class LLMDecisionEngine:
 
     def _create_decision_prompt(self, context: Dict, agent_state: AgentState) -> str:
         """Create prompt for LLM decision making"""
+
+        # Format position analysis
+        positions_text = ""
+        if context.get('positions'):
+            positions_text = "\n## Current Positions:\n"
+            for pos in context['positions']:
+                positions_text += f"""
+Position {pos['index']} - {pos['token']}:
+- Entry Price: ${pos['entry_price']:.2f}
+- Current Price: ${pos['current_price']:.2f}
+- PnL: {pos['pnl_percent']:+.2f}%
+- Stop Loss: ${pos['stop_loss']:.2f} (triggered: {pos['should_stop_loss']})
+- Take Profit: ${pos['take_profit']:.2f} (triggered: {pos['should_take_profit']})
+"""
+
         prompt = f"""You are an AI trading agent managing a DeFi portfolio. Analyze the current state and make an investment decision.
 
 ## Current Portfolio State:
@@ -109,7 +183,7 @@ class LLMDecisionEngine:
 - Utilization Rate: {context['portfolio']['utilization']:.1%}
 - Collateral Ratio: {context['portfolio']['collateral_ratio']:.2f}x
 - Active Positions: {context['portfolio']['positions']}
-
+{positions_text}
 ## Risk Profile:
 - Risk Tolerance: {context['risk_profile']['tolerance']}/10
 - Target ROI: {context['risk_profile']['target_roi']:.1%}
@@ -122,10 +196,11 @@ class LLMDecisionEngine:
 1. **HOLD** - Keep current positions, no action
 2. **BORROW_AND_INVEST** - Borrow USDC and buy a token (ETH, BTC, etc.)
 3. **REBALANCE** - Close some positions and rebalance
-4. **TAKE_PROFIT** - Close profitable positions
-5. **STOP_LOSS** - Close losing positions to limit losses
+4. **TAKE_PROFIT** - Close profitable positions (use when position_index has should_take_profit=True)
+5. **STOP_LOSS** - Close losing positions to limit losses (use when position_index has should_stop_loss=True)
 
 ## Decision Guidelines:
+- **PRIORITY 1**: If any position has should_stop_loss=True or should_take_profit=True, close it immediately
 - If no positions and available credit > 0: Consider BORROW_AND_INVEST
 - If utilization > 80%: Be cautious, consider HOLD or TAKE_PROFIT
 - If collateral ratio < 1.5x: URGENT - reduce risk
@@ -139,6 +214,7 @@ Analyze the situation and provide a decision in this EXACT JSON format:
     "reasoning": "Brief explanation of why you chose this action",
     "token": "ETH|BTC|null (only for BORROW_AND_INVEST)",
     "amount_usdc": 0.0 (amount to borrow/invest, 0 for other actions),
+    "position_index": 0 (only for TAKE_PROFIT or STOP_LOSS, which position to close),
     "risk_assessment": "LOW|MEDIUM|HIGH",
     "expected_return": 0.0 (estimated return as decimal, e.g., 0.08 for 8%)
 }}
@@ -182,6 +258,9 @@ Provide ONLY the JSON, no other text."""
                     "token": token,
                     "amount": amount_usdc
                 }
+            elif action in [InvestmentAction.TAKE_PROFIT, InvestmentAction.STOP_LOSS]:
+                position_index = data.get("position_index", 0)
+                params = {"position_index": position_index}
 
             return Decision(
                 action=action,
