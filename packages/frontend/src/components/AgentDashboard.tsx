@@ -7,6 +7,7 @@ import { Card } from "./ui/Card";
 import { Activity, TrendingUp, Shield, Wallet, Plus, BarChart3 } from "lucide-react";
 import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { AutomationSettings } from "./AutomationSettings";
+import { useQueryClient } from '@tanstack/react-query';
 
 // Contract addresses from environment variables
 const CONTRACTS = {
@@ -205,6 +206,13 @@ const ERC20_ABI = [
     name: "mint",
     outputs: [],
     stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ type: "uint256" }],
+    stateMutability: "view",
     type: "function",
   },
 ] as const;
@@ -994,31 +1002,58 @@ function DepositCollateralModal({
   onSuccess: () => void;
   contracts: typeof CONTRACTS;
 }) {
+  const { address } = useAccount();
+  const queryClient = useQueryClient();
   const [amount, setAmount] = useState("");
-  const [currentStep, setCurrentStep] = useState<"idle" | "approving" | "approved" | "depositing" | "complete">("idle");
+  const [currentStep, setCurrentStep] = useState<"idle" | "minting" | "minted" | "approving" | "approved" | "depositing" | "complete">("idle");
   const { writeContract, data: hash, isPending, error: writeError, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess, error: receiptError } = useWaitForTransactionReceipt({ hash });
 
-  // Debug logging
+  // Check user's RWA token balance
+  const { data: tokenBalance, isLoading: isLoadingBalance, error: balanceError } = useReadContract({
+    address: contracts.RWAToken,
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: address ? [address] : undefined,
+    query: {
+      enabled: !!address,
+    }
+  });
+
+  // Debug balance loading
   useEffect(() => {
-    console.log("Modal state:", {
-      amount,
-      currentStep,
-      hash,
-      isPending,
-      isConfirming,
-      isSuccess,
-      writeError: writeError?.message,
-      receiptError: receiptError?.message
+    console.log("Balance state:", {
+      tokenBalance: tokenBalance ? (tokenBalance as bigint).toString() : "undefined",
+      isLoadingBalance,
+      balanceError: balanceError?.message,
+      address,
+      rwaTokenAddress: contracts.RWAToken
     });
-  }, [amount, currentStep, hash, isPending, isConfirming, isSuccess, writeError, receiptError]);
+  }, [tokenBalance, isLoadingBalance, balanceError, address, contracts.RWAToken]);
 
   // Handle transaction success
   useEffect(() => {
-    if (isSuccess && currentStep === "approving") {
+    if (isSuccess && currentStep === "minting") {
+      console.log("Minting successful! Starting balance refetch...");
+      setCurrentStep("minted");
+      // Immediately invalidate and refetch balance
+      const refetchInterval = setInterval(() => {
+        console.log("Invalidating balance query...");
+        queryClient.invalidateQueries({ queryKey: ['readContract'] });
+      }, 1000);
+
+      // Clear interval after 10 seconds
+      setTimeout(() => {
+        console.log("Stopping balance refetch interval");
+        clearInterval(refetchInterval);
+      }, 10000);
+
+      setTimeout(() => {
+        reset();
+      }, 800);
+    } else if (isSuccess && currentStep === "approving") {
       console.log("Approval successful! Now depositing...");
       setCurrentStep("approved");
-      // Reset the transaction state and proceed to deposit
       setTimeout(() => {
         reset();
         handleDepositAfterApproval();
@@ -1028,7 +1063,21 @@ function DepositCollateralModal({
       setCurrentStep("complete");
       setTimeout(() => onSuccess(), 1500);
     }
-  }, [isSuccess, currentStep]);
+  }, [isSuccess, currentStep, queryClient]);
+
+  const handleMintTokens = () => {
+    if (!amount || parseFloat(amount) <= 0 || !address) {
+      alert("Please enter a valid amount");
+      return;
+    }
+    setCurrentStep("minting");
+    writeContract({
+      address: contracts.RWAToken,
+      abi: ERC20_ABI,
+      functionName: "mint",
+      args: [address, parseEther(amount)],
+    });
+  };
 
   const handleDepositAfterApproval = async () => {
     if (!amount || parseFloat(amount) <= 0) return;
@@ -1050,7 +1099,6 @@ function DepositCollateralModal({
       });
     } catch (error) {
       console.error("Error depositing:", error);
-      alert("Error: " + (error as Error).message);
       setCurrentStep("idle");
     }
   };
@@ -1083,10 +1131,21 @@ function DepositCollateralModal({
       console.log("approve writeContract called");
     } catch (error) {
       console.error("Error approving:", error);
-      alert("Error: " + (error as Error).message);
       setCurrentStep("idle");
     }
   };
+
+  const isLocked = currentStep !== "idle" && currentStep !== "minted";
+  const balance = tokenBalance ? parseFloat(formatEther(tokenBalance as bigint)) : 0;
+  const requestedAmount = amount ? parseFloat(amount) : 0;
+  const hasInsufficientBalance = requestedAmount > 0 && balance < requestedAmount;
+
+  // Debug logging
+  useEffect(() => {
+    if (currentStep === "minted") {
+      console.log("Balance check:", { balance, requestedAmount, hasInsufficientBalance, tokenBalance: tokenBalance ? (tokenBalance as bigint).toString() : "undefined" });
+    }
+  }, [balance, currentStep, requestedAmount, hasInsufficientBalance, tokenBalance]);
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
@@ -1103,49 +1162,87 @@ function DepositCollateralModal({
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.0"
-              disabled={currentStep !== "idle"}
+              disabled={isLocked}
               className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
             />
+            {tokenBalance !== undefined && (
+              <p className="text-xs text-gray-400 mt-1">
+                Your balance: {formatEther(tokenBalance as bigint)} RWA tokens
+              </p>
+            )}
+          </div>
+
+          {/* Warning if insufficient balance */}
+          {hasInsufficientBalance && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+              <p className="text-sm text-yellow-400">
+                ⚠️ Insufficient balance! You need {amount} tokens but only have {balance.toFixed(2)}. Click "Get tokens" below to mint more.
+              </p>
+            </div>
+          )}
+
+          {/* Step indicators */}
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <span className={currentStep === "minting" || currentStep === "minted" ? "text-green-400" : ""}>
+              {currentStep === "minted" || ["approving","approved","depositing","complete"].includes(currentStep) ? "✅" : "1."} Get tokens
+            </span>
+            <span>→</span>
+            <span className={currentStep === "approving" || currentStep === "approved" ? "text-yellow-400" : ["depositing","complete"].includes(currentStep) ? "text-green-400" : ""}>
+              {["approved","depositing","complete"].includes(currentStep) ? "✅" : "2."} Approve
+            </span>
+            <span>→</span>
+            <span className={currentStep === "depositing" ? "text-yellow-400" : currentStep === "complete" ? "text-green-400" : ""}>
+              {currentStep === "complete" ? "✅" : "3."} Deposit
+            </span>
           </div>
 
           <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
             <p className="text-sm text-blue-400">
-              💡 This will approve and deposit collateral to your AI agent in one flow
+              💡 Need more RWA tokens? Mint them for free first, then approve and deposit.
             </p>
           </div>
 
           {(writeError || receiptError) && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-              <p className="text-sm text-red-400">
-                ❌ Error: {writeError?.message || receiptError?.message}
+              <p className="text-sm text-red-400 break-all">
+                ❌ {writeError?.message || receiptError?.message}
               </p>
             </div>
           )}
 
+          {currentStep === "minting" && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+              <p className="text-sm text-yellow-400">
+                {isPending ? "⏳ Confirm in wallet..." : "⏳ Minting tokens..."}
+              </p>
+            </div>
+          )}
+          {currentStep === "minted" && (
+            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+              <p className="text-sm text-green-400">✅ Tokens minted! Now approve below.</p>
+            </div>
+          )}
           {currentStep === "approving" && (
             <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
               <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Waiting for approval confirmation..." : "⏳ Approving transaction..."}
+                {isPending ? "⏳ Confirm in wallet..." : "⏳ Approving..."}
               </p>
             </div>
           )}
-
           {currentStep === "approved" && (
             <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
               <p className="text-sm text-green-400">
-                ✅ Approved! Now depositing...
+                ✅ Approved! Depositing...
               </p>
             </div>
           )}
-
           {currentStep === "depositing" && (
             <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
               <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Waiting for deposit confirmation..." : "⏳ Depositing collateral..."}
+                {isPending ? "⏳ Confirm in wallet..." : "⏳ Depositing collateral..."}
               </p>
             </div>
           )}
-
           {currentStep === "complete" && (
             <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
               <p className="text-sm text-green-400">
@@ -1155,25 +1252,39 @@ function DepositCollateralModal({
           )}
         </div>
 
-        <div className="flex gap-3 mt-6">
+        <div className="space-y-2 mt-6">
+          {/* Mint button */}
           <button
-            onClick={handleApproveAndDeposit}
-            disabled={currentStep !== "idle"}
-            className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+            onClick={handleMintTokens}
+            disabled={isLocked || currentStep === "minted" || ["approving","approved","depositing","complete"].includes(currentStep)}
+            className="w-full px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {currentStep === "idle" ? "Approve & Deposit" :
-             currentStep === "approving" ? "Approving..." :
-             currentStep === "approved" ? "Approved ✓" :
-             currentStep === "depositing" ? "Depositing..." :
-             "Complete ✓"}
+            {currentStep === "minting" ? "Minting..." :
+             currentStep === "minted" || ["approving","approved","depositing","complete"].includes(currentStep) ? "✅ Tokens ready" :
+             `Get ${amount || "1000"} Test RWA Tokens (free)`}
           </button>
-          <button
-            onClick={onClose}
-            disabled={currentStep !== "idle" && currentStep !== "complete"}
-            className="px-4 py-2 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all disabled:opacity-50"
-          >
-            Cancel
-          </button>
+
+          <div className="flex gap-3">
+            <button
+              onClick={handleApproveAndDeposit}
+              disabled={isLocked || hasInsufficientBalance}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {currentStep === "idle" || currentStep === "minted" ?
+                (hasInsufficientBalance ? "⚠️ Insufficient Balance" : "Approve & Deposit") :
+               currentStep === "approving" ? "Approving..." :
+               currentStep === "approved" ? "Approved ✓" :
+               currentStep === "depositing" ? "Depositing..." :
+               "Complete ✓"}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={isLocked}
+              className="px-4 py-2 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       </Card>
     </div>
@@ -1191,6 +1302,7 @@ function InitializeAgentModal({
   contracts: typeof CONTRACTS;
   userAddress: `0x${string}`;
 }) {
+  const queryClient = useQueryClient();
   const [amount, setAmount] = useState("1000");
   const [currentStep, setCurrentStep] = useState<
     "idle" | "minting" | "minted" | "approving" | "approved" | "initializing" | "complete"
@@ -1198,9 +1310,36 @@ function InitializeAgentModal({
   const { writeContract, data: hash, isPending, error: writeError, reset } = useWriteContract();
   const { isSuccess, error: receiptError } = useWaitForTransactionReceipt({ hash });
 
+  // Check user's RWA token balance
+  const { data: tokenBalance, isLoading: isLoadingBalance, error: balanceError } = useReadContract({
+    address: contracts.RWAToken,
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: userAddress ? [userAddress] : undefined,
+    query: {
+      enabled: !!userAddress,
+    }
+  });
+
+  const balance = tokenBalance ? parseFloat(formatEther(tokenBalance as bigint)) : 0;
+  const requestedAmount = amount ? parseFloat(amount) : 0;
+  const hasInsufficientBalance = requestedAmount > 0 && balance < requestedAmount;
+
   useEffect(() => {
     if (isSuccess && currentStep === "minting") {
+      console.log("Init: Minting successful! Starting balance refetch...");
       setCurrentStep("minted");
+      // Invalidate queries to refetch balance
+      const refetchInterval = setInterval(() => {
+        console.log("Init: Invalidating balance query...");
+        queryClient.invalidateQueries({ queryKey: ['readContract'] });
+      }, 1000);
+
+      setTimeout(() => {
+        console.log("Init: Stopping balance refetch interval");
+        clearInterval(refetchInterval);
+      }, 10000);
+
       setTimeout(() => { reset(); }, 800);
     } else if (isSuccess && currentStep === "approving") {
       setCurrentStep("approved");
@@ -1209,7 +1348,7 @@ function InitializeAgentModal({
       setCurrentStep("complete");
       setTimeout(() => onSuccess(), 1500);
     }
-  }, [isSuccess, currentStep]);
+  }, [isSuccess, currentStep, queryClient]);
 
   const handleMintTestTokens = () => {
     if (!amount || parseFloat(amount) <= 0) {
@@ -1288,7 +1427,21 @@ function InitializeAgentModal({
               disabled={isLocked}
               className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
             />
+            {tokenBalance !== undefined && (
+              <p className="text-xs text-gray-400 mt-1">
+                Your balance: {formatEther(tokenBalance as bigint)} RWA tokens
+              </p>
+            )}
           </div>
+
+          {/* Warning if insufficient balance */}
+          {hasInsufficientBalance && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+              <p className="text-sm text-yellow-400">
+                ⚠️ Insufficient balance! You need {amount} tokens but only have {balance.toFixed(2)}. Click "Get tokens" below to mint more.
+              </p>
+            </div>
+          )}
 
           {/* Step indicators */}
           <div className="flex items-center gap-2 text-xs text-gray-500">
@@ -1371,10 +1524,11 @@ function InitializeAgentModal({
           <div className="flex gap-2">
             <button
               onClick={handleApproveAndInitialize}
-              disabled={isLocked}
-              className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+              disabled={isLocked || hasInsufficientBalance}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {currentStep === "idle" || currentStep === "minted" ? "Approve & Initialize" :
+              {currentStep === "idle" || currentStep === "minted" ?
+                (hasInsufficientBalance ? "⚠️ Insufficient Balance" : "Approve & Initialize") :
                currentStep === "approving" ? "Approving..." :
                currentStep === "approved" ? "Approved ✓" :
                currentStep === "initializing" ? "Initializing..." :
