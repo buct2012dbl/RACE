@@ -6,6 +6,7 @@ import { parseEther, formatEther } from "viem";
 import { Card } from "./ui/Card";
 import { Activity, TrendingUp, Shield, Wallet, Plus, BarChart3 } from "lucide-react";
 import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { AutomationSettings } from "./AutomationSettings";
 
 // Contract addresses from environment variables
 const CONTRACTS = {
@@ -19,8 +20,73 @@ const CONTRACTS = {
 // Debug: Log contract addresses
 console.log("Contract addresses:", CONTRACTS);
 
-// AIAgent ABI - key functions we need
+// AIAgent ABI - Multi-User Functions
 const AI_AGENT_ABI = [
+  // New multi-user functions
+  {
+    inputs: [{ name: "user", type: "address" }],
+    name: "getUserState",
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "config", type: "tuple", components: [
+            { name: "owner", type: "address" },
+            { name: "riskTolerance", type: "uint256" },
+            { name: "targetROI", type: "uint256" },
+            { name: "maxDrawdown", type: "uint256" },
+            { name: "strategies", type: "address[]" }
+          ]},
+          { name: "rwaCollateral", type: "address" },
+          { name: "collateralAmount", type: "uint256" },
+          { name: "borrowedUSDC", type: "uint256" },
+          { name: "availableCredit", type: "uint256" },
+          { name: "totalAssets", type: "uint256" },
+          { name: "positions", type: "tuple[]", components: [
+            { name: "protocol", type: "address" },
+            { name: "asset", type: "address" },
+            { name: "amount", type: "uint256" },
+            { name: "entryPrice", type: "uint256" },
+            { name: "timestamp", type: "uint256" },
+            { name: "stopLoss", type: "uint256" },
+            { name: "takeProfit", type: "uint256" }
+          ]}
+        ]
+      }
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "user", type: "address" }],
+    name: "getUserPositions",
+    outputs: [
+      {
+        name: "",
+        type: "tuple[]",
+        components: [
+          { name: "protocol", type: "address" },
+          { name: "asset", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "entryPrice", type: "uint256" },
+          { name: "timestamp", type: "uint256" },
+          { name: "stopLoss", type: "uint256" },
+          { name: "takeProfit", type: "uint256" }
+        ]
+      }
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ name: "user", type: "address" }],
+    name: "hasInitialized",
+    outputs: [{ type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  // Backward compatible functions (for msg.sender)
   {
     inputs: [],
     name: "agentState",
@@ -71,6 +137,27 @@ const AI_AGENT_ABI = [
     stateMutability: "nonpayable",
     type: "function",
   },
+  {
+    inputs: [
+      { name: "rwaCollateral", type: "address" },
+      { name: "collateralAmount", type: "uint256" },
+      {
+        name: "config",
+        type: "tuple",
+        components: [
+          { name: "owner", type: "address" },
+          { name: "riskTolerance", type: "uint256" },
+          { name: "targetROI", type: "uint256" },
+          { name: "maxDrawdown", type: "uint256" },
+          { name: "strategies", type: "address[]" },
+        ],
+      },
+    ],
+    name: "initializeAgent",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
 ] as const;
 
 // RWA Vault ABI
@@ -110,6 +197,16 @@ const ERC20_ABI = [
     stateMutability: "nonpayable",
     type: "function",
   },
+  {
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" }
+    ],
+    name: "mint",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
 ] as const;
 
 // Helper function to get token name from address
@@ -130,6 +227,7 @@ export function AgentDashboard() {
   const { address, isConnected, chain } = useAccount();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
+  const [showInitModal, setShowInitModal] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [activeTab, setActiveTab] = useState<'positions' | 'chart'>('positions');
   const [kLineData, setKLineData] = useState<any[]>([]);
@@ -137,18 +235,37 @@ export function AgentDashboard() {
   const [priceDataError, setPriceDataError] = useState<string | null>(null);
   const itemsPerPage = 5;
 
-  // Read agent state from blockchain
+  // Read agent state from blockchain (user-specific)
   const { data: agentStateData, refetch: refetchAgentState, error, isLoading } = useReadContract({
     address: CONTRACTS.AIAgent,
     abi: AI_AGENT_ABI,
-    functionName: "agentState",
+    functionName: "getUserState",
+    args: address ? [address as `0x${string}`] : undefined,
+    query: {
+      enabled: !!address && isConnected,
+    }
   });
 
-  // Read positions from blockchain
+  // Check if user has initialized their agent
+  const { data: hasInitializedData, refetch: refetchHasInitialized } = useReadContract({
+    address: CONTRACTS.AIAgent,
+    abi: AI_AGENT_ABI,
+    functionName: "hasInitialized",
+    args: address ? [address as `0x${string}`] : undefined,
+    query: {
+      enabled: !!address && isConnected,
+    }
+  });
+
+  // Read positions from blockchain (user-specific)
   const { data: positionsData, refetch: refetchPositions } = useReadContract({
     address: CONTRACTS.AIAgent,
     abi: AI_AGENT_ABI,
-    functionName: "getAllPositions",
+    functionName: "getUserPositions",
+    args: address ? [address as `0x${string}`] : undefined,
+    query: {
+      enabled: !!address && isConnected,
+    }
   });
 
   // Fallback mock data generator (used only when API fails)
@@ -255,13 +372,13 @@ export function AgentDashboard() {
 
   // Calculate stats from blockchain data
   const stats = agentStateData ? {
-    tvl: Number(formatEther(agentStateData[2] || 0n)),
-    activeAgents: 1, // For now, single agent
+    tvl: Number(formatEther((agentStateData as any).collateralAmount || 0n)),
+    activeAgents: 1,
     avgAPY: 8.5,
     riskScore: calculateRiskScore(agentStateData),
-    collateralAmount: Number(formatEther(agentStateData[2] || 0n)),
-    borrowedUSDC: Number(formatEther(agentStateData[3] || 0n)),
-    availableCredit: Number(formatEther(agentStateData[4] || 0n)),
+    collateralAmount: Number(formatEther((agentStateData as any).collateralAmount || 0n)),
+    borrowedUSDC: Number(formatEther((agentStateData as any).borrowedUSDC || 0n)),
+    availableCredit: Number(formatEther((agentStateData as any).availableCredit || 0n)),
   } : {
     tvl: 0,
     activeAgents: 0,
@@ -274,9 +391,9 @@ export function AgentDashboard() {
 
   // Calculate risk score based on agent state
   function calculateRiskScore(state: any): number {
-    const collateral = Number(formatEther(state[2] || 0n));
-    const borrowed = Number(formatEther(state[3] || 0n));
-    const availableCredit = Number(formatEther(state[4] || 0n));
+    const collateral = Number(formatEther(state.collateralAmount || 0n));
+    const borrowed = Number(formatEther(state.borrowedUSDC || 0n));
+    const availableCredit = Number(formatEther(state.availableCredit || 0n));
 
     if (collateral === 0) return 0;
 
@@ -303,12 +420,22 @@ export function AgentDashboard() {
   useEffect(() => {
     if (isConnected) {
       const interval = setInterval(() => {
+        refetchHasInitialized();
         refetchAgentState();
         refetchPositions();
       }, 30000);
       return () => clearInterval(interval);
     }
-  }, [isConnected, refetchAgentState, refetchPositions]);
+  }, [isConnected, refetchHasInitialized, refetchAgentState, refetchPositions]);
+
+  // Auto-show init modal when address connects and agent is not initialized
+  useEffect(() => {
+    if (isConnected && address && hasInitializedData === false) {
+      setShowInitModal(true);
+    } else {
+      setShowInitModal(false);
+    }
+  }, [isConnected, address, hasInitializedData]);
 
   if (!isConnected) {
     return (
@@ -333,6 +460,7 @@ export function AgentDashboard() {
   };
 
   const handleRefresh = () => {
+    refetchHasInitialized();
     refetchAgentState();
     refetchPositions();
   };
@@ -346,18 +474,42 @@ export function AgentDashboard() {
             <strong>Contract Read Error:</strong> {error.message}
           </p>
           <p className="text-yellow-400 text-sm">
-            💡 The AI Agent contract exists but hasn't been initialized yet. You need to call the <code>initializeAgent()</code> function first with RWA collateral.
+            💡 {hasInitializedData ?
+              'There was an error reading your agent data.' :
+              'You haven\'t initialized your AI Agent yet. Call initializeAgent() with RWA collateral to get started.'}
           </p>
         </Card>
       )}
 
       <Card className="p-4 bg-blue-500/10 border-blue-500/20">
         <div className="text-sm text-blue-400 space-y-1">
+          <p><strong>Connected Wallet:</strong> {address}</p>
           <p><strong>Connected Chain:</strong> {chain?.name} (ID: {chain?.id})</p>
           <p><strong>AI Agent Contract:</strong> {CONTRACTS.AIAgent}</p>
+          <p><strong>Agent Initialized:</strong> {hasInitializedData === undefined ? 'Checking...' : hasInitializedData ? 'Yes ✓' : 'No - Initializing...'}</p>
           <p><strong>Data Status:</strong> {isLoading ? "Loading..." : agentStateData ? "Loaded" : "Not initialized"}</p>
         </div>
       </Card>
+
+      {/* Initialization required banner */}
+      {hasInitializedData === false && (
+        <Card className="p-4 bg-yellow-500/10 border-yellow-500/30">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-yellow-300 font-semibold">Agent not initialized</p>
+              <p className="text-yellow-400/80 text-sm mt-1">
+                You need to initialize your AI Agent with RWA collateral before you can start.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowInitModal(true)}
+              className="ml-4 px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 rounded-lg text-sm font-semibold border border-yellow-500/30 transition-all whitespace-nowrap"
+            >
+              Initialize Now
+            </button>
+          </div>
+        </Card>
+      )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -430,19 +582,29 @@ export function AgentDashboard() {
 
       {/* Action Buttons */}
       <div className="flex gap-4">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            console.log("Button clicked!");
-            handleDepositRWA();
-          }}
-          className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg hover:shadow-xl"
-        >
-          <Plus className="w-5 h-5" />
-          Deposit RWA Collateral
-        </button>
+        {!hasInitializedData ? (
+          <button
+            type="button"
+            onClick={() => setShowInitModal(true)}
+            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg hover:shadow-xl"
+          >
+            <Plus className="w-5 h-5" />
+            Initialize Agent
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleDepositRWA();
+            }}
+            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg hover:shadow-xl"
+          >
+            <Plus className="w-5 h-5" />
+            Deposit RWA Collateral
+          </button>
+        )}
         <button
           type="button"
           onClick={handleRefresh}
@@ -451,6 +613,9 @@ export function AgentDashboard() {
           🔄 Refresh Data
         </button>
       </div>
+
+      {/* AI Automation Settings */}
+      {hasInitializedData && <AutomationSettings />}
 
       {/* Agent Info */}
       <Card className="p-6">
@@ -790,6 +955,21 @@ export function AgentDashboard() {
       )}
       </Card>
 
+      {/* Initialize Agent Modal - shown automatically for new addresses */}
+      {showInitModal && (
+        <InitializeAgentModal
+          onClose={() => setShowInitModal(false)}
+          onSuccess={() => {
+            setShowInitModal(false);
+            refetchHasInitialized();
+            refetchAgentState();
+            refetchPositions();
+          }}
+          contracts={CONTRACTS}
+          userAddress={address!}
+        />
+      )}
+
       {/* Deposit Modal */}
       {showDepositModal && (
         <DepositCollateralModal
@@ -994,6 +1174,220 @@ function DepositCollateralModal({
           >
             Cancel
           </button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function InitializeAgentModal({
+  onClose,
+  onSuccess,
+  contracts,
+  userAddress,
+}: {
+  onClose: () => void;
+  onSuccess: () => void;
+  contracts: typeof CONTRACTS;
+  userAddress: `0x${string}`;
+}) {
+  const [amount, setAmount] = useState("1000");
+  const [currentStep, setCurrentStep] = useState<
+    "idle" | "minting" | "minted" | "approving" | "approved" | "initializing" | "complete"
+  >("idle");
+  const { writeContract, data: hash, isPending, error: writeError, reset } = useWriteContract();
+  const { isSuccess, error: receiptError } = useWaitForTransactionReceipt({ hash });
+
+  useEffect(() => {
+    if (isSuccess && currentStep === "minting") {
+      setCurrentStep("minted");
+      setTimeout(() => { reset(); }, 800);
+    } else if (isSuccess && currentStep === "approving") {
+      setCurrentStep("approved");
+      setTimeout(() => { reset(); handleInitializeAfterApproval(); }, 1000);
+    } else if (isSuccess && currentStep === "initializing") {
+      setCurrentStep("complete");
+      setTimeout(() => onSuccess(), 1500);
+    }
+  }, [isSuccess, currentStep]);
+
+  const handleMintTestTokens = () => {
+    if (!amount || parseFloat(amount) <= 0) {
+      alert("Please enter a valid amount");
+      return;
+    }
+    setCurrentStep("minting");
+    writeContract({
+      address: contracts.RWAToken,
+      abi: ERC20_ABI,
+      functionName: "mint",
+      args: [userAddress, parseEther(amount)],
+    });
+  };
+
+  const handleInitializeAfterApproval = () => {
+    if (!amount || parseFloat(amount) <= 0) return;
+    setCurrentStep("initializing");
+    writeContract({
+      address: contracts.AIAgent,
+      abi: AI_AGENT_ABI,
+      functionName: "initializeAgent",
+      args: [
+        contracts.RWAToken,
+        parseEther(amount),
+        {
+          owner: userAddress,
+          riskTolerance: 5n,
+          targetROI: 1000n,
+          maxDrawdown: 2000n,
+          strategies: [],
+        },
+      ],
+    });
+  };
+
+  const handleApproveAndInitialize = () => {
+    if (!amount || parseFloat(amount) <= 0) {
+      alert("Please enter a valid amount");
+      return;
+    }
+    setCurrentStep("approving");
+    writeContract({
+      address: contracts.RWAToken,
+      abi: ERC20_ABI,
+      functionName: "approve",
+      args: [contracts.AIAgent, parseEther(amount)],
+    });
+  };
+
+  const isLocked = currentStep !== "idle" && currentStep !== "minted";
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+      <Card className="p-6 max-w-md w-full mx-4 border-purple-500/40">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
+            <Shield className="w-5 h-5 text-purple-400" />
+          </div>
+          <h3 className="text-2xl font-bold text-white">Initialize AI Agent</h3>
+        </div>
+        <p className="text-gray-400 text-sm mb-5">
+          Activate your agent by depositing RWA collateral. Need test tokens? Mint them first for free.
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">
+              RWA Collateral Amount (tokens)
+            </label>
+            <input
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="1000"
+              disabled={isLocked}
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
+            />
+          </div>
+
+          {/* Step indicators */}
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <span className={currentStep === "minting" || currentStep === "minted" ? "text-green-400" : ""}>
+              {currentStep === "minted" || ["approving","approved","initializing","complete"].includes(currentStep) ? "✅" : "1."} Get tokens
+            </span>
+            <span>→</span>
+            <span className={currentStep === "approving" || currentStep === "approved" ? "text-yellow-400" : ["initializing","complete"].includes(currentStep) ? "text-green-400" : ""}>
+              {["approved","initializing","complete"].includes(currentStep) ? "✅" : "2."} Approve
+            </span>
+            <span>→</span>
+            <span className={currentStep === "initializing" ? "text-yellow-400" : currentStep === "complete" ? "text-green-400" : ""}>
+              {currentStep === "complete" ? "✅" : "3."} Initialize
+            </span>
+          </div>
+
+          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-sm text-blue-400 space-y-1">
+            <p>Agent defaults: Risk 5/10 · Target ROI 10% · Max Drawdown 20%</p>
+          </div>
+
+          {(writeError || receiptError) && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+              <p className="text-sm text-red-400 break-all">
+                Error: {writeError?.message || receiptError?.message}
+              </p>
+            </div>
+          )}
+
+          {currentStep === "minting" && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+              <p className="text-sm text-yellow-400">
+                {isPending ? "⏳ Confirm in wallet..." : "⏳ Minting test tokens..."}
+              </p>
+            </div>
+          )}
+          {currentStep === "minted" && (
+            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+              <p className="text-sm text-green-400">✅ {amount} RWA tokens minted! Now approve below.</p>
+            </div>
+          )}
+          {currentStep === "approving" && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+              <p className="text-sm text-yellow-400">
+                {isPending ? "⏳ Confirm in wallet..." : "⏳ Approving token transfer..."}
+              </p>
+            </div>
+          )}
+          {currentStep === "approved" && (
+            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+              <p className="text-sm text-green-400">✅ Approved! Initializing agent...</p>
+            </div>
+          )}
+          {currentStep === "initializing" && (
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+              <p className="text-sm text-yellow-400">
+                {isPending ? "⏳ Confirm in wallet..." : "⏳ Initializing agent on-chain..."}
+              </p>
+            </div>
+          )}
+          {currentStep === "complete" && (
+            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+              <p className="text-sm text-green-400">✅ Agent initialized successfully!</p>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2 mt-6">
+          {/* Step 1: Mint test tokens */}
+          <button
+            onClick={handleMintTestTokens}
+            disabled={isLocked || currentStep === "minted" || ["approving","approved","initializing","complete"].includes(currentStep)}
+            className="w-full px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {currentStep === "minting" ? "Minting..." :
+             currentStep === "minted" || ["approving","approved","initializing","complete"].includes(currentStep) ? "✅ Tokens ready" :
+             `Get ${amount || "1000"} Test RWA Tokens (free)`}
+          </button>
+
+          {/* Step 2+3: Approve & Initialize */}
+          <div className="flex gap-2">
+            <button
+              onClick={handleApproveAndInitialize}
+              disabled={isLocked}
+              className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50"
+            >
+              {currentStep === "idle" || currentStep === "minted" ? "Approve & Initialize" :
+               currentStep === "approving" ? "Approving..." :
+               currentStep === "approved" ? "Approved ✓" :
+               currentStep === "initializing" ? "Initializing..." :
+               "Complete ✓"}
+            </button>
+            <button
+              onClick={onClose}
+              disabled={isLocked}
+              className="px-4 py-2 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all disabled:opacity-50"
+            >
+              Later
+            </button>
+          </div>
         </div>
       </Card>
     </div>

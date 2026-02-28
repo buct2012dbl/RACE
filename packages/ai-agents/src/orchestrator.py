@@ -26,18 +26,19 @@ class AgentOrchestrator:
             config.WBTC_ADDRESS.lower(): "BTC",
         }
 
-    async def orchestrate_decision(self, agent_id: str) -> Dict:
+    async def orchestrate_decision(self, agent_id: str, user_address: str) -> Dict:
         """
-        Orchestrate decision-making for an agent
+        Orchestrate decision-making for a specific user's agent
 
         Args:
             agent_id: Agent contract address
+            user_address: User's wallet address
 
         Returns:
             Decision result with proof
         """
-        # Get agent state from blockchain
-        agent_state = await self._fetch_agent_state(agent_id)
+        # Get agent state from blockchain for specific user
+        agent_state = await self._fetch_agent_state(agent_id, user_address)
 
         # Get market data
         market_data = await self._fetch_market_data()
@@ -56,15 +57,19 @@ class AgentOrchestrator:
         # Sign decision
         signature = self._sign_decision(decision)
 
+        # Store decision in database with user_address
+        await self._store_decision(agent_id, user_address, decision)
+
         return {
             "decision": decision.dict(),
             "proof": proof,
             "timestamp": int(time.time()),
-            "signature": signature
+            "signature": signature,
+            "user_address": user_address
         }
 
-    async def _fetch_agent_state(self, agent_id: str) -> AgentState:
-        """Fetch agent state from blockchain"""
+    async def _fetch_agent_state(self, agent_id: str, user_address: str) -> AgentState:
+        """Fetch agent state from blockchain for a specific user"""
         from .models import AgentConfig, Position
 
         try:
@@ -93,18 +98,19 @@ class AgentOrchestrator:
                 abi=abi
             )
 
-            # Fetch agent state from contract
-            print(f"Fetching agent state from {agent_id}...")
-            state = contract.functions.agentState().call()
+            # Fetch user-specific agent state from contract
+            user_addr = self.w3.to_checksum_address(user_address)
+            print(f"Fetching agent state for user {user_addr} from {agent_id}...")
+            state = contract.functions.getUserState(user_addr).call()
 
             # Parse the state tuple
             # state = (config, rwaCollateral, collateralAmount, borrowedUSDC, availableCredit, totalAssets)
             config_tuple = state[0]
 
-            # Fetch positions
+            # Fetch positions for this user
             positions = []
             try:
-                positions_data = contract.functions.getAllPositions().call()
+                positions_data = contract.functions.getUserPositions(user_addr).call()
                 for pos in positions_data:
                     positions.append(Position(
                         protocol=pos[0],
@@ -115,9 +121,9 @@ class AgentOrchestrator:
                         stop_loss=float(pos[5]) / 1e18,  # Price values ARE in wei (scaled by 10^18), unscale them
                         take_profit=float(pos[6]) / 1e18  # Price values ARE in wei (scaled by 10^18), unscale them
                     ))
-                print(f"   Positions: {len(positions)}")
+                print(f"   User positions: {len(positions)}")
             except Exception as e:
-                print(f"   Warning: Could not fetch positions: {e}")
+                print(f"   Warning: Could not fetch user positions: {e}")
 
             agent_state = AgentState(
                 config=AgentConfig(
@@ -135,7 +141,7 @@ class AgentOrchestrator:
                 positions=positions
             )
 
-            print(f"✅ Agent state fetched:")
+            print(f"✅ Agent state fetched for user {user_addr}:")
             print(f"   Collateral: {agent_state.collateral_amount}")
             print(f"   Borrowed: {agent_state.borrowed_usdc}")
             print(f"   Available Credit: {agent_state.available_credit}")
@@ -143,7 +149,7 @@ class AgentOrchestrator:
             return agent_state
 
         except Exception as e:
-            print(f"❌ Error fetching agent state: {e}")
+            print(f"❌ Error fetching agent state for user {user_address}: {e}")
             import traceback
             traceback.print_exc()
             # Return default state on error
@@ -273,13 +279,15 @@ class AgentOrchestrator:
             return "0x" + "0" * 130
 
     async def run_agent_loop(self, agent_id: str):
-        """Run continuous agent loop"""
-        print(f"Starting agent loop for {agent_id}")
+        """Run continuous agent loop (legacy - single user)"""
+        print(f"⚠️  WARNING: run_agent_loop is deprecated, use run_multi_user_loop instead")
+        print(f"Starting single-user agent loop for {agent_id}")
 
         while True:
             try:
-                # Make decision
-                result = await self.orchestrate_decision(agent_id)
+                # For backward compatibility, use owner address as user
+                # In multi-user setup, this should be replaced
+                result = await self.orchestrate_decision(agent_id, "0x0000000000000000000000000000000000000000")
 
                 print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Agent Decision:")
                 print(f"Action: {result['decision']['action']}")
@@ -289,7 +297,7 @@ class AgentOrchestrator:
 
                 # Execute decision on-chain (if not HOLD)
                 if result['decision']['action'] != "HOLD":
-                    await self._execute_decision(agent_id, result)
+                    await self._execute_decision(agent_id, "0x0000000000000000000000000000000000000000", result)
 
                 # Wait for next decision interval
                 await asyncio.sleep(config.DECISION_INTERVAL)
@@ -298,9 +306,266 @@ class AgentOrchestrator:
                 print(f"Error in agent loop: {e}")
                 await asyncio.sleep(60)  # Wait 1 minute on error
 
-    async def _execute_decision(self, agent_id: str, result: Dict):
-        """Execute decision on blockchain"""
-        print(f"\n🤖 Executing decision on-chain for agent {agent_id}")
+    async def run_multi_user_loop(self, agent_id: str):
+        """
+        Run continuous decision loop for all users of an agent contract.
+        Each user is checked against their own cooldown period independently.
+        The loop sleeps until the soonest cooldown expires rather than a fixed interval.
+
+        Args:
+            agent_id: Agent contract address
+        """
+        print(f"🚀 Starting multi-user agent loop for {agent_id}")
+
+        # Derive controller address once (same for the lifetime of this process)
+        controller_addr = None
+        if config.PRIVATE_KEY:
+            controller_addr = self.w3.eth.account.from_key(config.PRIVATE_KEY).address
+            print(f"   Controller: {controller_addr}")
+
+        while True:
+            try:
+                all_users = await self._get_all_users(agent_id)
+
+                if not all_users:
+                    print(f"No users found, waiting {config.DECISION_INTERVAL}s...")
+                    await asyncio.sleep(config.DECISION_INTERVAL)
+                    continue
+
+                now = int(time.time())
+                print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Checking {len(all_users)} user(s)")
+
+                opted_in_count = 0
+                skipped_count = 0
+                # Track the earliest timestamp at which any user becomes actionable
+                next_wakeup: Optional[int] = None
+
+                for user_address in all_users:
+                    try:
+                        print(f"\n--- User {user_address} ---")
+
+                        prefs = await self._get_user_preferences(agent_id, user_address)
+
+                        if not prefs or not prefs.get('autoDecisionsEnabled'):
+                            print(f"⏭️  Automation disabled")
+                            skipped_count += 1
+                            continue
+
+                        if not controller_addr or prefs['decisionController'].lower() != controller_addr.lower():
+                            print(f"⚠️  Controller mismatch (expected {controller_addr}, got {prefs['decisionController']})")
+                            skipped_count += 1
+                            continue
+
+                        last_decision = int(prefs.get('lastDecisionTime', 0))
+                        cooldown = int(prefs.get('cooldownPeriod', 300))
+                        next_decision_at = last_decision + cooldown
+
+                        if now < next_decision_at:
+                            remaining = next_decision_at - now
+                            print(f"⏸️  Cooldown active — {remaining}s remaining (cooldown={cooldown}s)")
+                            # Record when this user can be processed next
+                            if next_wakeup is None or next_decision_at < next_wakeup:
+                                next_wakeup = next_decision_at
+                            skipped_count += 1
+                            continue
+
+                        # User is ready
+                        opted_in_count += 1
+                        strategy_name = ['Conservative', 'Balanced', 'Aggressive'][int(prefs.get('strategy', 1))]
+                        print(f"✅ Ready | Strategy: {strategy_name} | Cooldown: {cooldown}s")
+
+                        result = await self.orchestrate_decision(agent_id, user_address)
+
+                        print(f"   Action:          {result['decision']['action']}")
+                        print(f"   Reasoning:       {result['decision']['reasoning']}")
+                        print(f"   Risk Score:      {result['decision']['risk_score']:.2f}")
+                        print(f"   Expected Return: {result['decision']['expected_return']:.2%}")
+
+                        if result['decision']['action'] == 'BORROW_AND_INVEST':
+                            borrow_amount = result['decision']['params'].get('borrow_amount', 0)
+                            max_borrow = float(self.w3.from_wei(prefs['maxBorrowPerDecision'], 'ether'))
+                            if borrow_amount > max_borrow:
+                                print(f"⚠️  Capping borrow {borrow_amount:.4f} → {max_borrow:.4f}")
+                                result['decision']['params']['borrow_amount'] = max_borrow
+
+                        if result['decision']['action'] != "HOLD":
+                            await self._execute_decision(agent_id, user_address, result)
+                        else:
+                            print(f"   HOLD — no action taken")
+
+                        # After execution this user's next slot is now + their cooldown
+                        user_next = int(time.time()) + cooldown
+                        if next_wakeup is None or user_next < next_wakeup:
+                            next_wakeup = user_next
+
+                        await asyncio.sleep(1)  # brief pause between users
+
+                    except Exception as e:
+                        print(f"Error processing user {user_address}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+
+                print(f"\n📊 Round complete — acted: {opted_in_count}, skipped: {skipped_count}")
+
+                # Sleep until the soonest user cooldown expires.
+                # Cap at DECISION_INTERVAL so we also notice newly registered users.
+                if next_wakeup is not None:
+                    sleep_for = max(10, next_wakeup - int(time.time()))
+                    sleep_for = min(sleep_for, config.DECISION_INTERVAL)
+                    print(f"⏰ Next wakeup in {sleep_for}s (soonest cooldown expiry, capped at {config.DECISION_INTERVAL}s)")
+                else:
+                    sleep_for = config.DECISION_INTERVAL
+                    print(f"⏰ No active users — polling again in {sleep_for}s")
+
+                await asyncio.sleep(sleep_for)
+
+            except Exception as e:
+                print(f"Error in multi-user loop: {e}")
+                import traceback
+                traceback.print_exc()
+                await asyncio.sleep(60)
+
+    async def _get_all_users(self, agent_id: str) -> List[str]:
+        """
+        Get all users who have initialized agents on this contract
+
+        Args:
+            agent_id: Agent contract address
+
+        Returns:
+            List of user wallet addresses
+        """
+        try:
+            import json
+            import os
+
+            # Load AIAgent contract ABI
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            abi_path = os.path.join(
+                project_root,
+                "contracts/artifacts/contracts/AIAgent.sol/AIAgent.json"
+            )
+
+            with open(abi_path, 'r') as f:
+                contract_json = json.load(f)
+                abi = contract_json['abi']
+
+            # Create contract instance
+            contract = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(agent_id),
+                abi=abi
+            )
+
+            # Call getAllUsers function
+            users = contract.functions.getAllUsers().call()
+
+            print(f"Found {len(users)} users in contract")
+            return [str(user) for user in users]
+
+        except Exception as e:
+            print(f"Error getting all users: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    async def _get_user_preferences(self, agent_id: str, user_address: str) -> Optional[Dict]:
+        """
+        Get user's automation preferences from contract
+
+        Args:
+            agent_id: Agent contract address
+            user_address: User wallet address
+
+        Returns:
+            Dict with user preferences or None if error
+        """
+        try:
+            import json
+            import os
+
+            # Load AIAgent contract ABI
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            abi_path = os.path.join(
+                project_root,
+                "contracts/artifacts/contracts/AIAgent.sol/AIAgent.json"
+            )
+
+            with open(abi_path, 'r') as f:
+                contract_json = json.load(f)
+                abi = contract_json['abi']
+
+            # Create contract instance
+            contract = self.w3.eth.contract(
+                address=self.w3.to_checksum_address(agent_id),
+                abi=abi
+            )
+
+            # Call getUserPreferences function
+            user_addr = self.w3.to_checksum_address(user_address)
+            prefs = contract.functions.getUserPreferences(user_addr).call()
+
+            # Parse preferences tuple
+            # (autoDecisionsEnabled, decisionController, maxBorrowPerDecision, cooldownPeriod, lastDecisionTime, strategy)
+            return {
+                'autoDecisionsEnabled': prefs[0],
+                'decisionController': prefs[1],
+                'maxBorrowPerDecision': prefs[2],
+                'cooldownPeriod': prefs[3],
+                'lastDecisionTime': prefs[4],
+                'strategy': prefs[5]
+            }
+
+        except Exception as e:
+            print(f"Error getting user preferences for {user_address}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    async def _store_decision(self, agent_id: str, user_address: str, decision: Decision):
+        """
+        Store decision in Supabase database
+
+        Args:
+            agent_id: Agent contract address
+            user_address: User wallet address
+            decision: Decision object to store
+        """
+        try:
+            # Import Supabase client (if configured)
+            from supabase import create_client
+            import os
+
+            supabase_url = os.getenv('SUPABASE_URL')
+            supabase_key = os.getenv('SUPABASE_SERVICE_KEY')
+
+            if not supabase_url or not supabase_key:
+                print("⚠️  Supabase not configured, skipping decision storage")
+                return
+
+            supabase = create_client(supabase_url, supabase_key)
+
+            # Insert decision with user_address
+            data = {
+                'agent_id': agent_id,
+                'user_address': user_address,
+                'action': decision.action,
+                'params': decision.params,
+                'risk_score': float(decision.risk_score),
+                'expected_return': float(decision.expected_return),
+                'reasoning': decision.reasoning,
+                'timestamp': int(time.time())
+            }
+
+            result = supabase.table('agent_decisions').insert(data).execute()
+            print(f"✅ Decision stored in database for user {user_address}")
+
+        except Exception as e:
+            print(f"Warning: Could not store decision in database: {e}")
+
+    async def _execute_decision(self, agent_id: str, user_address: str, result: Dict):
+        """Execute decision on blockchain for a specific user"""
+        print(f"\n🤖 Executing decision on-chain for user {user_address} on agent {agent_id}")
 
         if not config.PRIVATE_KEY:
             print("⚠️  No private key configured, skipping on-chain execution")
@@ -343,15 +608,19 @@ class AgentOrchestrator:
             action_enum = action_map.get(action, 0)
 
             print(f"Action: {action} (enum: {action_enum})")
+            print(f"User: {user_address}")
             print(f"Params: {result['decision']['params']}")
 
             # Encode parameters based on action
             params = self._encode_params(action, result['decision']['params'])
 
-            # Build transaction
+            # Build transaction with user parameter (NEW)
             nonce = self.w3.eth.get_transaction_count(account.address)
 
+            user_addr = self.w3.to_checksum_address(user_address)
+
             tx = contract.functions.makeInvestmentDecision(
+                user_addr,      # NEW: user parameter
                 action_enum,
                 params
             ).build_transaction({
@@ -461,27 +730,51 @@ class AgentOrchestrator:
             # HOLD or unknown action
             return b''
 
-    async def monitor_risk(self, agent_id: str):
-        """Continuously monitor agent risk"""
-        print(f"Starting risk monitoring for {agent_id}")
+    async def monitor_risk(self, agent_id: str, user_address: Optional[str] = None):
+        """
+        Continuously monitor agent risk
+
+        Args:
+            agent_id: Agent contract address
+            user_address: Optional specific user to monitor, or None to monitor all users
+        """
+        if user_address:
+            print(f"Starting risk monitoring for user {user_address} on agent {agent_id}")
+        else:
+            print(f"Starting risk monitoring for all users on agent {agent_id}")
 
         while True:
             try:
-                agent_state = await self._fetch_agent_state(agent_id)
-                market_data = await self._fetch_market_data()
-
-                risk_report = await self.decision_engine._assess_risk(
-                    agent_state,
-                    market_data
-                )
-
-                if risk_report.warnings:
-                    print(f"\n⚠️  RISK WARNINGS for {agent_id}:")
-                    for warning in risk_report.warnings:
-                        print(f"  - {warning}")
+                if user_address:
+                    # Monitor specific user
+                    await self._monitor_user_risk(agent_id, user_address)
+                else:
+                    # Monitor all users
+                    all_users = await self._get_all_users(agent_id)
+                    for user in all_users:
+                        await self._monitor_user_risk(agent_id, user)
 
                 await asyncio.sleep(config.RISK_CHECK_INTERVAL)
 
             except Exception as e:
                 print(f"Error in risk monitoring: {e}")
                 await asyncio.sleep(60)
+
+    async def _monitor_user_risk(self, agent_id: str, user_address: str):
+        """Monitor risk for a specific user"""
+        try:
+            agent_state = await self._fetch_agent_state(agent_id, user_address)
+            market_data = await self._fetch_market_data()
+
+            risk_report = await self.decision_engine._assess_risk(
+                agent_state,
+                market_data
+            )
+
+            if risk_report.warnings:
+                print(f"\n⚠️  RISK WARNINGS for user {user_address}:")
+                for warning in risk_report.warnings:
+                    print(f"  - {warning}")
+
+        except Exception as e:
+            print(f"Error monitoring risk for user {user_address}: {e}")
