@@ -3,8 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseEther, formatEther } from "viem";
-import { Card } from "./ui/Card";
-import { Activity, TrendingUp, Shield, Wallet, Plus, BarChart3 } from "lucide-react";
+import { Activity, TrendingUp, Shield, Wallet, Plus, BarChart3, RefreshCw } from "lucide-react";
 import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { AutomationSettings } from "./AutomationSettings";
 import { useQueryClient } from '@tanstack/react-query';
@@ -18,12 +17,10 @@ const CONTRACTS = {
   RWAToken: process.env.NEXT_PUBLIC_RWA_TOKEN_ADDRESS as `0x${string}`,
 };
 
-// Debug: Log contract addresses
 console.log("Contract addresses:", CONTRACTS);
 
 // AIAgent ABI - Multi-User Functions
 const AI_AGENT_ABI = [
-  // New multi-user functions
   {
     inputs: [{ name: "user", type: "address" }],
     name: "getUserState",
@@ -87,7 +84,6 @@ const AI_AGENT_ABI = [
     stateMutability: "view",
     type: "function",
   },
-  // Backward compatible functions (for msg.sender)
   {
     inputs: [],
     name: "agentState",
@@ -130,9 +126,7 @@ const AI_AGENT_ABI = [
     type: "function",
   },
   {
-    inputs: [
-      { name: "amount", type: "uint256" }
-    ],
+    inputs: [{ name: "amount", type: "uint256" }],
     name: "addCollateral",
     outputs: [],
     stateMutability: "nonpayable",
@@ -217,17 +211,13 @@ const ERC20_ABI = [
   },
 ] as const;
 
-// Helper function to get token name from address
 function getTokenName(tokenAddress: string): string {
   const address = tokenAddress.toLowerCase();
-
-  // Map known token addresses to names
   const tokenMap: { [key: string]: string } = {
     [process.env.NEXT_PUBLIC_WETH_ADDRESS?.toLowerCase() || '']: 'ETH',
     [process.env.NEXT_PUBLIC_WBTC_ADDRESS?.toLowerCase() || '']: 'BTC',
     [process.env.NEXT_PUBLIC_USDC_ADDRESS?.toLowerCase() || '']: 'USDC',
   };
-
   return tokenMap[address] || 'Unknown';
 }
 
@@ -243,132 +233,92 @@ export function AgentDashboard() {
   const [priceDataError, setPriceDataError] = useState<string | null>(null);
   const itemsPerPage = 5;
 
-  // Read agent state from blockchain (user-specific)
   const { data: agentStateData, refetch: refetchAgentState, error, isLoading } = useReadContract({
     address: CONTRACTS.AIAgent,
     abi: AI_AGENT_ABI,
     functionName: "getUserState",
     args: address ? [address as `0x${string}`] : undefined,
-    query: {
-      enabled: !!address && isConnected,
-    }
+    query: { enabled: !!address && isConnected }
   });
 
-  // Check if user has initialized their agent
   const { data: hasInitializedData, refetch: refetchHasInitialized } = useReadContract({
     address: CONTRACTS.AIAgent,
     abi: AI_AGENT_ABI,
     functionName: "hasInitialized",
     args: address ? [address as `0x${string}`] : undefined,
-    query: {
-      enabled: !!address && isConnected,
-    }
+    query: { enabled: !!address && isConnected }
   });
 
-  // Read positions from blockchain (user-specific)
   const { data: positionsData, refetch: refetchPositions } = useReadContract({
     address: CONTRACTS.AIAgent,
     abi: AI_AGENT_ABI,
     functionName: "getUserPositions",
     args: address ? [address as `0x${string}`] : undefined,
-    query: {
-      enabled: !!address && isConnected,
-    }
+    query: { enabled: !!address && isConnected }
   });
 
-  // Fallback mock data generator (used only when API fails)
   const generateMockKLineData = () => {
     const data = [];
-    const basePrice = 45000; // Base price for BTC
+    const basePrice = 45000;
     let currentPrice = basePrice;
-
     for (let i = 30; i >= 0; i--) {
       const date = new Date();
       date.setDate(date.getDate() - i);
-
-      // Simulate price movement
       const change = (Math.random() - 0.5) * 2000;
       currentPrice += change;
-
       const open = currentPrice;
       const close = currentPrice + (Math.random() - 0.5) * 1000;
       const high = Math.max(open, close) + Math.random() * 500;
       const low = Math.min(open, close) - Math.random() * 500;
       const volume = Math.random() * 1000000;
-
       data.push({
         date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        open: Math.round(open),
-        high: Math.round(high),
-        low: Math.round(low),
-        close: Math.round(close),
+        open: Math.round(open), high: Math.round(high),
+        low: Math.round(low), close: Math.round(close),
         volume: Math.round(volume),
       });
     }
-
     return data;
   };
 
-  // Fetch real price data from backend API
   useEffect(() => {
     const fetchPriceData = async () => {
       if (activeTab !== 'chart') return;
-
       setPriceDataLoading(true);
       setPriceDataError(null);
-
       try {
-        // Determine which token to fetch based on positions
-        let symbol = 'BTC'; // Default to BTC
+        let symbol = 'BTC';
         if (positionsData && (positionsData as any[]).length > 0) {
           const firstPosition = (positionsData as any[])[0];
           const tokenName = getTokenName(firstPosition.asset);
           symbol = tokenName === 'ETH' ? 'ETH' : 'BTC';
         }
-
-        // Fetch from backend API (adjust URL based on your setup)
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
         const response = await fetch(`${apiUrl}/api/prices/history?symbol=${symbol}&days=30`);
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch price data: ${response.statusText}`);
-        }
-
+        if (!response.ok) throw new Error(`Failed to fetch price data: ${response.statusText}`);
         const result = await response.json();
-
-        if (!result.success || !result.data.ohlc) {
-          throw new Error('Invalid response format from API');
-        }
-
-        // Format data for the chart
+        if (!result.success || !result.data.ohlc) throw new Error('Invalid response format from API');
         const formattedData = result.data.ohlc.map((item: any) => {
           const date = new Date(item.timestamp);
           return {
             date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-            open: Math.round(item.open),
-            high: Math.round(item.high),
-            low: Math.round(item.low),
-            close: Math.round(item.close),
-            volume: 0, // CoinGecko OHLC doesn't include volume
+            open: Math.round(item.open), high: Math.round(item.high),
+            low: Math.round(item.low), close: Math.round(item.close),
+            volume: 0,
           };
         });
-
         setKLineData(formattedData);
       } catch (error) {
         console.error('Error fetching price data:', error);
         setPriceDataError(error instanceof Error ? error.message : 'Failed to fetch price data');
-
-        // Fallback to mock data on error
         setKLineData(generateMockKLineData());
       } finally {
         setPriceDataLoading(false);
       }
     };
-
     fetchPriceData();
   }, [activeTab, positionsData]);
 
-  // Debug logging
   useEffect(() => {
     console.log("Contract Address:", CONTRACTS.AIAgent);
     console.log("Connected Chain:", chain?.id, chain?.name);
@@ -378,7 +328,6 @@ export function AgentDashboard() {
     console.log("Show Deposit Modal:", showDepositModal);
   }, [agentStateData, error, isLoading, chain, showDepositModal]);
 
-  // Calculate stats from blockchain data
   const stats = agentStateData ? {
     tvl: Number(formatEther((agentStateData as any).collateralAmount || 0n)),
     activeAgents: 1,
@@ -388,43 +337,24 @@ export function AgentDashboard() {
     borrowedUSDC: Number(formatEther((agentStateData as any).borrowedUSDC || 0n)),
     availableCredit: Number(formatEther((agentStateData as any).availableCredit || 0n)),
   } : {
-    tvl: 0,
-    activeAgents: 0,
-    avgAPY: 0,
-    riskScore: 0,
-    collateralAmount: 0,
-    borrowedUSDC: 0,
-    availableCredit: 0,
+    tvl: 0, activeAgents: 0, avgAPY: 0, riskScore: 0,
+    collateralAmount: 0, borrowedUSDC: 0, availableCredit: 0,
   };
 
-  // Calculate risk score based on agent state
   function calculateRiskScore(state: any): number {
     const collateral = Number(formatEther(state.collateralAmount || 0n));
     const borrowed = Number(formatEther(state.borrowedUSDC || 0n));
     const availableCredit = Number(formatEther(state.availableCredit || 0n));
-
     if (collateral === 0) return 0;
-
-    // Calculate collateral ratio
     const collateralRatio = borrowed > 0 ? collateral / borrowed : 0;
-
-    // Calculate utilization rate
     const totalCredit = borrowed + availableCredit;
     const utilizationRate = totalCredit > 0 ? borrowed / totalCredit : 0;
-
-    // Risk score calculation (0-1 scale)
-    // Lower collateral ratio = higher risk
-    // Higher utilization = higher risk
     const collateralRisk = collateralRatio > 0 ? Math.max(0, 1 - (collateralRatio / 2.0)) : 0;
     const utilizationRisk = utilizationRate;
-
-    // Weighted average
-    const riskScore = (collateralRisk * 0.5) + (utilizationRisk * 0.3) + 0.1; // Base risk
-
+    const riskScore = (collateralRisk * 0.5) + (utilizationRisk * 0.3) + 0.1;
     return Math.min(1.0, Math.max(0, riskScore));
   }
 
-  // Auto-refresh every 30 seconds
   useEffect(() => {
     if (isConnected) {
       const interval = setInterval(() => {
@@ -436,7 +366,6 @@ export function AgentDashboard() {
     }
   }, [isConnected, refetchHasInitialized, refetchAgentState, refetchPositions]);
 
-  // Auto-show init modal when address connects and agent is not initialized
   useEffect(() => {
     if (isConnected && address && hasInitializedData === false) {
       setShowInitModal(true);
@@ -445,22 +374,24 @@ export function AgentDashboard() {
     }
   }, [isConnected, address, hasInitializedData]);
 
+  // ─── Not Connected ────────────────────────────────────────────────────────────
   if (!isConnected) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <Wallet className="w-16 h-16 mx-auto mb-4 text-gray-400" />
-          <p className="text-gray-400 text-lg">
-            Connect your wallet to view your AI agents
+      <div className="flex items-center justify-center py-24 border border-[#111111] border-t-0 newsprint-texture">
+        <div className="text-center px-8">
+          <div className="border border-[#111111] w-16 h-16 mx-auto mb-6 flex items-center justify-center">
+            <Wallet className="w-7 h-7 text-[#111111]" strokeWidth={1.5} />
+          </div>
+          <p className="font-serif text-2xl font-bold text-[#111111] mb-2">
+            Connect Your Wallet
+          </p>
+          <p className="font-body text-sm text-neutral-500 leading-relaxed max-w-xs mx-auto">
+            Connect your wallet to access your AI agents and portfolio dashboard.
           </p>
         </div>
       </div>
     );
   }
-
-  const handleCreateAgent = () => {
-    setShowCreateModal(true);
-  };
 
   const handleDepositRWA = () => {
     console.log("Deposit button clicked, opening modal");
@@ -473,497 +404,514 @@ export function AgentDashboard() {
     refetchPositions();
   };
 
+  // ─── Dashboard ────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      {/* Debug Info */}
+    <div>
+      {/* Contract error */}
       {error && (
-        <Card className="p-4 bg-red-500/10 border-red-500/20">
-          <p className="text-red-400 text-sm mb-2">
-            <strong>Contract Read Error:</strong> {error.message}
+        <div className="border-l-4 border-[#CC0000] bg-[#FFF5F5] px-5 py-4 mb-4 mt-4">
+          <p className="font-mono text-xs uppercase tracking-widest text-[#CC0000] mb-1">Contract Error</p>
+          <p className="font-body text-sm text-[#111111]">{error.message}</p>
+          <p className="font-mono text-xs text-neutral-500 mt-1">
+            {hasInitializedData
+              ? "There was an error reading your agent data."
+              : "Initialize your AI Agent with RWA collateral to get started."}
           </p>
-          <p className="text-yellow-400 text-sm">
-            💡 {hasInitializedData ?
-              'There was an error reading your agent data.' :
-              'You haven\'t initialized your AI Agent yet. Call initializeAgent() with RWA collateral to get started.'}
-          </p>
-        </Card>
-      )}
-
-      <Card className="p-4 bg-blue-500/10 border-blue-500/20">
-        <div className="text-sm text-blue-400 space-y-1">
-          <p><strong>Connected Wallet:</strong> {address}</p>
-          <p><strong>Connected Chain:</strong> {chain?.name} (ID: {chain?.id})</p>
-          <p><strong>AI Agent Contract:</strong> {CONTRACTS.AIAgent}</p>
-          <p><strong>Agent Initialized:</strong> {hasInitializedData === undefined ? 'Checking...' : hasInitializedData ? 'Yes ✓' : 'No - Initializing...'}</p>
-          <p><strong>Data Status:</strong> {isLoading ? "Loading..." : agentStateData ? "Loaded" : "Not initialized"}</p>
         </div>
-      </Card>
-
-      {/* Initialization required banner */}
-      {hasInitializedData === false && (
-        <Card className="p-4 bg-yellow-500/10 border-yellow-500/30">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-yellow-300 font-semibold">Agent not initialized</p>
-              <p className="text-yellow-400/80 text-sm mt-1">
-                You need to initialize your AI Agent with RWA collateral before you can start.
-              </p>
-            </div>
-            <button
-              onClick={() => setShowInitModal(true)}
-              className="ml-4 px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 rounded-lg text-sm font-semibold border border-yellow-500/30 transition-all whitespace-nowrap"
-            >
-              Initialize Now
-            </button>
-          </div>
-        </Card>
       )}
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="p-6 hover:border-purple-500/50 transition-all cursor-pointer">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-400">Total Collateral</p>
-              <p className="text-2xl font-bold text-white mt-1">
-                ${stats.collateralAmount.toFixed(2)}
-              </p>
-              <p className="text-sm text-green-400 mt-1">From blockchain</p>
-            </div>
-            <div className="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
-              <Wallet className="w-6 h-6 text-purple-400" />
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-6 hover:border-blue-500/50 transition-all cursor-pointer">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-400">Borrowed USDC</p>
-              <p className="text-2xl font-bold text-white mt-1">
-                ${stats.borrowedUSDC.toFixed(2)}
-              </p>
-              <p className="text-sm text-blue-400 mt-1">Live data</p>
-            </div>
-            <div className="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
-              <Activity className="w-6 h-6 text-blue-400" />
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-6 hover:border-green-500/50 transition-all cursor-pointer">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-400">Available Credit</p>
-              <p className="text-2xl font-bold text-white mt-1">
-                ${stats.availableCredit.toFixed(2)}
-              </p>
-              <p className="text-sm text-green-400 mt-1">Ready to use</p>
-            </div>
-            <div className="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
-              <TrendingUp className="w-6 h-6 text-green-400" />
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-6 hover:border-yellow-500/50 transition-all cursor-pointer">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-gray-400">Risk Score</p>
-              <p className={`text-2xl font-bold mt-1 ${
-                stats.riskScore < 0.3 ? 'text-green-400' :
-                stats.riskScore < 0.6 ? 'text-yellow-400' :
-                'text-red-400'
-              }`}>
-                {stats.riskScore < 0.3 ? 'Low' : stats.riskScore < 0.6 ? 'Medium' : 'High'}
-              </p>
-              <p className="text-sm text-gray-400 mt-1">
-                {stats.riskScore.toFixed(2)}/1.0
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-yellow-500/20 rounded-lg flex items-center justify-center">
-              <Shield className="w-6 h-6 text-yellow-400" />
-            </div>
-          </div>
-        </Card>
+      {/* System status strip */}
+      <div className="border border-[#111111] border-t-0 p-4 bg-[#F5F5F5]">
+        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-2">System Status</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1">
+          <p className="font-mono text-xs text-neutral-600">
+            <span className="font-bold text-[#111111]">Wallet:</span> {address}
+          </p>
+          <p className="font-mono text-xs text-neutral-600">
+            <span className="font-bold text-[#111111]">Chain:</span> {chain?.name} (ID: {chain?.id})
+          </p>
+          <p className="font-mono text-xs text-neutral-600 truncate">
+            <span className="font-bold text-[#111111]">Contract:</span> {CONTRACTS.AIAgent}
+          </p>
+          <p className="font-mono text-xs text-neutral-600">
+            <span className="font-bold text-[#111111]">Agent:</span>{" "}
+            {hasInitializedData === undefined ? "Checking..." : hasInitializedData ? "Initialized ✓" : "Not initialized"} &nbsp;|&nbsp;{" "}
+            {isLoading ? "Loading…" : agentStateData ? "Data loaded" : "Awaiting init"}
+          </p>
+        </div>
       </div>
 
-      {/* Action Buttons */}
-      <div className="flex gap-4">
+      {/* Init required banner */}
+      {hasInitializedData === false && (
+        <div className="border border-[#CC0000] border-t-0 bg-[#FFF9F9] px-5 py-4 flex items-center justify-between">
+          <div>
+            <p className="font-mono text-xs uppercase tracking-widest text-[#CC0000] mb-1">Action Required</p>
+            <p className="font-body text-sm text-[#111111]">
+              Initialize your AI Agent with RWA collateral before you can begin autonomous trading.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowInitModal(true)}
+            className="ml-4 px-5 py-2.5 bg-[#CC0000] text-[#F9F9F7] font-mono text-xs uppercase tracking-widest whitespace-nowrap hover:bg-[#AA0000] transition-colors min-h-[44px]"
+          >
+            Initialize Now
+          </button>
+        </div>
+      )}
+
+      {/* ── Stats grid ──────────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-[#111111] mt-6">
+        {/* Collateral */}
+        <div className="border-r border-b border-[#111111] p-6">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">Total Collateral</p>
+              <p className="font-serif text-3xl font-black text-[#111111] mt-2 leading-none">
+                ${stats.collateralAmount.toFixed(2)}
+              </p>
+              <p className="font-mono text-xs text-neutral-500 mt-2">From blockchain</p>
+            </div>
+            <div className="border border-[#111111] w-10 h-10 flex items-center justify-center shrink-0">
+              <Wallet className="w-5 h-5 text-[#111111]" strokeWidth={1.5} />
+            </div>
+          </div>
+        </div>
+
+        {/* Borrowed */}
+        <div className="border-r border-b border-[#111111] p-6">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">Borrowed USDC</p>
+              <p className="font-serif text-3xl font-black text-[#111111] mt-2 leading-none">
+                ${stats.borrowedUSDC.toFixed(2)}
+              </p>
+              <p className="font-mono text-xs text-neutral-500 mt-2">Live data</p>
+            </div>
+            <div className="border border-[#111111] w-10 h-10 flex items-center justify-center shrink-0">
+              <Activity className="w-5 h-5 text-[#111111]" strokeWidth={1.5} />
+            </div>
+          </div>
+        </div>
+
+        {/* Credit */}
+        <div className="border-r border-b border-[#111111] p-6">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">Available Credit</p>
+              <p className="font-serif text-3xl font-black text-[#111111] mt-2 leading-none">
+                ${stats.availableCredit.toFixed(2)}
+              </p>
+              <p className="font-mono text-xs text-neutral-500 mt-2">Ready to deploy</p>
+            </div>
+            <div className="border border-[#111111] w-10 h-10 flex items-center justify-center shrink-0">
+              <TrendingUp className="w-5 h-5 text-[#111111]" strokeWidth={1.5} />
+            </div>
+          </div>
+        </div>
+
+        {/* Risk */}
+        <div className="border-b border-[#111111] p-6">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">Risk Score</p>
+              <p className={`font-serif text-3xl font-black mt-2 leading-none ${
+                stats.riskScore < 0.3 ? "text-[#111111]"
+                  : stats.riskScore < 0.6 ? "text-neutral-600"
+                  : "text-[#CC0000]"
+              }`}>
+                {stats.riskScore < 0.3 ? "Low" : stats.riskScore < 0.6 ? "Med." : "High"}
+              </p>
+              <p className="font-mono text-xs text-neutral-500 mt-2">
+                {stats.riskScore.toFixed(2)} / 1.0
+              </p>
+            </div>
+            <div className="border border-[#111111] w-10 h-10 flex items-center justify-center shrink-0">
+              <Shield className="w-5 h-5 text-[#111111]" strokeWidth={1.5} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Action buttons ───────────────────────────────────────────────────────── */}
+      <div className="flex gap-3 py-5 border-b border-[#111111]">
         {!hasInitializedData ? (
           <button
             type="button"
             onClick={() => setShowInitModal(true)}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg hover:shadow-xl"
+            className="flex items-center gap-2 px-6 py-3 bg-[#111111] text-[#F9F9F7] border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-white hover:text-[#111111] transition-all duration-200 min-h-[44px]"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-4 h-4" strokeWidth={1.5} />
             Initialize Agent
           </button>
         ) : (
           <button
             type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              handleDepositRWA();
-            }}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg hover:shadow-xl"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDepositRWA(); }}
+            className="flex items-center gap-2 px-6 py-3 bg-[#111111] text-[#F9F9F7] border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-white hover:text-[#111111] transition-all duration-200 min-h-[44px]"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-4 h-4" strokeWidth={1.5} />
             Deposit RWA Collateral
           </button>
         )}
         <button
           type="button"
           onClick={handleRefresh}
-          className="px-6 py-3 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all border border-white/20"
+          className="flex items-center gap-2 px-6 py-3 border border-[#111111] bg-transparent text-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#111111] hover:text-[#F9F9F7] transition-all duration-200 min-h-[44px]"
         >
-          🔄 Refresh Data
+          <RefreshCw className="w-4 h-4" strokeWidth={1.5} />
+          Refresh
         </button>
       </div>
 
-      {/* AI Automation Settings */}
-      {hasInitializedData && <AutomationSettings />}
+      {/* ── Main 12-column grid ──────────────────────────────────────────────────── */}
+      <div className="lg:grid lg:grid-cols-12 border-b border-[#111111]">
 
-      {/* Agent Info */}
-      <Card className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-bold text-white">AI Agent Status</h3>
-          <span className="px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-sm">
-            Active
-          </span>
-        </div>
-        <div className="space-y-3">
-          <div className="flex justify-between">
-            <span className="text-gray-400">Contract Address:</span>
-            <span className="text-white font-mono text-sm">{CONTRACTS.AIAgent}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Owner:</span>
-            <span className="text-white font-mono text-sm">{address?.slice(0, 10)}...</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Collateral Ratio:</span>
-            <span className="text-white">
-              {stats.borrowedUSDC > 0
-                ? (stats.collateralAmount / stats.borrowedUSDC * 100).toFixed(0)
-                : 'N/A'}%
+        {/* Left col — Positions & Chart (8/12) */}
+        <div className="lg:col-span-8 border-r border-[#111111]">
+
+          {/* Section label */}
+          <div className="border-b border-[#111111] px-6 py-3 flex items-center justify-between">
+            <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+              Investment Positions
+            </p>
+            <span className="font-mono text-xs border border-[#111111] px-2 py-0.5">
+              {positionsData ? (positionsData as any[]).length : 0} Active
             </span>
           </div>
-        </div>
-      </Card>
 
-      {/* Investment Positions */}
-      <Card className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-bold text-white">Investment Positions</h3>
-          <span className="px-3 py-1 bg-blue-500/20 text-blue-400 rounded-full text-sm">
-            {positionsData ? (positionsData as any[]).length : 0} Active
-          </span>
-        </div>
+          {/* Tab navigation */}
+          <div className="flex border-b border-[#111111]">
+            <button
+              onClick={() => setActiveTab('positions')}
+              className={`px-6 py-3 font-mono text-xs uppercase tracking-widest border-r border-[#111111] transition-all duration-200 ${
+                activeTab === 'positions'
+                  ? "bg-[#111111] text-[#F9F9F7]"
+                  : "text-[#111111] hover:bg-[#F5F5F5]"
+              }`}
+            >
+              Positions
+            </button>
+            <button
+              onClick={() => setActiveTab('chart')}
+              className={`flex items-center gap-2 px-6 py-3 font-mono text-xs uppercase tracking-widest transition-all duration-200 ${
+                activeTab === 'chart'
+                  ? "bg-[#111111] text-[#F9F9F7]"
+                  : "text-[#111111] hover:bg-[#F5F5F5]"
+              }`}
+            >
+              <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.5} />
+              Price Chart
+            </button>
+          </div>
 
-        {/* Tab Navigation */}
-        <div className="flex gap-2 mb-6 border-b border-white/10">
-          <button
-            onClick={() => setActiveTab('positions')}
-            className={`px-4 py-2 font-medium transition-colors relative ${
-              activeTab === 'positions'
-                ? 'text-purple-400'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Positions
-            {activeTab === 'positions' && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-400" />
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('chart')}
-            className={`px-4 py-2 font-medium transition-colors relative flex items-center gap-2 ${
-              activeTab === 'chart'
-                ? 'text-purple-400'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            <BarChart3 className="w-4 h-4" />
-            Price Chart
-            {activeTab === 'chart' && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-400" />
-            )}
-          </button>
-        </div>
+          {/* Tab content */}
+          <div className="p-6">
+            {activeTab === 'positions' ? (
+              /* ── Positions tab ── */
+              !positionsData || (positionsData as any[]).length === 0 ? (
+                <div className="py-16 text-center newsprint-texture">
+                  <p className="font-serif text-xl font-bold text-[#111111] mb-2">No Active Positions</p>
+                  <p className="font-body text-sm text-neutral-500">
+                    The AI agent will automatically invest when conditions are favorable.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-0 border border-[#111111]">
+                    {(() => {
+                      const positions = positionsData as any[];
+                      const totalPages = Math.ceil(positions.length / itemsPerPage);
+                      const startIndex = (currentPage - 1) * itemsPerPage;
+                      const currentPositions = positions.slice(startIndex, startIndex + itemsPerPage);
 
-        {/* Tab Content */}
-        {activeTab === 'positions' ? (
-          // Positions Tab Content
-          !positionsData || (positionsData as any[]).length === 0 ? (
-            <div className="text-center py-8">
-              <p className="text-gray-400">No active positions yet</p>
-              <p className="text-sm text-gray-500 mt-2">
-                The AI agent will automatically invest when conditions are favorable
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="space-y-3">
-              {(() => {
-                const positions = positionsData as any[];
-                const totalPages = Math.ceil(positions.length / itemsPerPage);
-                const startIndex = (currentPage - 1) * itemsPerPage;
-                const endIndex = startIndex + itemsPerPage;
-                const currentPositions = positions.slice(startIndex, endIndex);
+                      return currentPositions.map((position: any, index: number) => {
+                        const tokenName = getTokenName(position.asset as string);
+                        const amount = Number(formatEther(position.amount || BigInt(0)));
+                        const rawEntryPrice = Number(position.entryPrice || BigInt(0));
+                        const rawStopLoss = Number(position.stopLoss || BigInt(0));
+                        const rawTakeProfit = Number(position.takeProfit || BigInt(0));
+                        const stopLossPct = rawEntryPrice > 0
+                          ? ((rawStopLoss - rawEntryPrice) / rawEntryPrice * 100) : 0;
+                        const takeProfitPct = rawEntryPrice > 0
+                          ? ((rawTakeProfit - rawEntryPrice) / rawEntryPrice * 100) : 0;
+                        const timestamp = Number(position.timestamp || BigInt(0));
+                        const date = new Date(timestamp * 1000);
 
-                return currentPositions.map((position: any, index: number) => {
-                  const tokenAddress = position.asset as string;
-                  const tokenName = getTokenName(tokenAddress);
-                  const amount = Number(formatEther(position.amount || BigInt(0)));
-
-                  // DEX prices are stored as raw values (not wei)
-                  // These represent: (reserve_token * 1e18) / reserve_USDC
-                  // Lower raw price = worse for long position (stop loss)
-                  // Higher raw price = better for long position (take profit)
-                  const rawEntryPrice = Number(position.entryPrice || BigInt(0));
-                  const rawStopLoss = Number(position.stopLoss || BigInt(0));
-                  const rawTakeProfit = Number(position.takeProfit || BigInt(0));
-
-                  // For display, show the percentage change on raw prices
-                  // Stop loss is -10% on raw price, take profit is +20% on raw price
-                  const stopLossPct = rawEntryPrice > 0 ? ((rawStopLoss - rawEntryPrice) / rawEntryPrice * 100) : 0;
-                  const takeProfitPct = rawEntryPrice > 0 ? ((rawTakeProfit - rawEntryPrice) / rawEntryPrice * 100) : 0;
-
-                  const timestamp = Number(position.timestamp || BigInt(0));
-                  const date = new Date(timestamp * 1000);
-
-                  return (
-                    <div key={startIndex + index} className="bg-white/5 border border-white/10 rounded-lg p-4">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center">
-                            <span className="text-white font-bold">{tokenName.slice(0, 1)}</span>
+                        return (
+                          <div key={startIndex + index} className="border-b border-[#111111] last:border-b-0">
+                            {/* Position header */}
+                            <div className="flex items-center justify-between p-4 border-b border-[#E5E5E0]">
+                              <div className="flex items-center gap-4">
+                                <div className="border border-[#111111] w-10 h-10 flex items-center justify-center">
+                                  <span className="font-serif text-lg font-black text-[#111111]">
+                                    {tokenName.slice(0, 1)}
+                                  </span>
+                                </div>
+                                <div>
+                                  <p className="font-serif text-base font-bold text-[#111111]">{tokenName}</p>
+                                  <p className="font-mono text-xs text-neutral-500">
+                                    {date.toLocaleDateString()} {date.toLocaleTimeString()}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <p className="font-mono text-sm font-bold text-[#111111]">
+                                  {amount.toFixed(4)} {tokenName}
+                                </p>
+                                <p className="font-mono text-xs text-neutral-500">Entry (DEX)</p>
+                              </div>
+                            </div>
+                            {/* Position details */}
+                            <div className="grid grid-cols-3">
+                              <div className="p-3 border-r border-[#E5E5E0]">
+                                <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">Protocol</p>
+                                <p className="font-mono text-xs text-[#111111]">
+                                  {(position.protocol as string).slice(0, 8)}...
+                                </p>
+                              </div>
+                              <div className="p-3 border-r border-[#E5E5E0]">
+                                <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">Stop Loss</p>
+                                <p className={`font-mono text-xs font-bold ${rawStopLoss > 0 ? "text-[#CC0000]" : "text-neutral-400"}`}>
+                                  {rawStopLoss > 0 ? `${stopLossPct.toFixed(1)}%` : "Not set"}
+                                </p>
+                              </div>
+                              <div className="p-3">
+                                <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">Take Profit</p>
+                                <p className="font-mono text-xs font-bold text-[#111111]">
+                                  {rawTakeProfit > 0
+                                    ? `${takeProfitPct > 0 ? "+" : ""}${takeProfitPct.toFixed(1)}%`
+                                    : "Not set"}
+                                </p>
+                              </div>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-white font-semibold">{tokenName}</p>
-                            <p className="text-sm text-gray-400">
-                              {date.toLocaleDateString()} {date.toLocaleTimeString()}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-white font-semibold">{amount.toFixed(4)} {tokenName}</p>
-                          <p className="text-sm text-gray-400">Entry Price (DEX)</p>
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-3 gap-4 pt-3 border-t border-white/10">
-                        <div>
-                          <p className="text-xs text-gray-400">Protocol</p>
-                          <p className="text-sm text-white font-mono">{(position.protocol as string).slice(0, 8)}...</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-400">Stop Loss</p>
-                          <p className="text-sm text-white">
-                            {rawStopLoss > 0
-                              ? `${stopLossPct.toFixed(1)}%`
-                              : 'Not set'}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-400">Take Profit</p>
-                          <p className="text-sm text-white">
-                            {rawTakeProfit > 0
-                              ? `${takeProfitPct > 0 ? '+' : ''}${takeProfitPct.toFixed(1)}%`
-                              : 'Not set'}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-
-            {/* Pagination Controls */}
-            {(() => {
-              const positions = positionsData as any[];
-              const totalPages = Math.ceil(positions.length / itemsPerPage);
-
-              if (totalPages <= 1) return null;
-
-              return (
-                <div className="flex items-center justify-between mt-6 pt-4 border-t border-white/10">
-                  <button
-                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                    disabled={currentPage === 1}
-                    className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
-                  >
-                    Previous
-                  </button>
-
-                  <div className="flex items-center gap-2">
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-                      <button
-                        key={page}
-                        onClick={() => setCurrentPage(page)}
-                        className={`w-10 h-10 rounded-lg transition-colors ${
-                          currentPage === page
-                            ? 'bg-blue-500 text-white'
-                            : 'bg-white/5 hover:bg-white/10 text-gray-400'
-                        }`}
-                      >
-                        {page}
-                      </button>
-                    ))}
+                        );
+                      });
+                    })()}
                   </div>
 
-                  <button
-                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                    disabled={currentPage === totalPages}
-                    className="px-4 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
-                  >
-                    Next
-                  </button>
+                  {/* Pagination */}
+                  {(() => {
+                    const positions = positionsData as any[];
+                    const totalPages = Math.ceil(positions.length / itemsPerPage);
+                    if (totalPages <= 1) return null;
+                    return (
+                      <div className="flex items-center justify-between mt-6 pt-4 border-t border-[#111111]">
+                        <button
+                          onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                          disabled={currentPage === 1}
+                          className="px-4 py-2 border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#111111] hover:text-[#F9F9F7] disabled:opacity-40 disabled:cursor-not-allowed transition-all min-h-[44px]"
+                        >
+                          Previous
+                        </button>
+                        <div className="flex items-center gap-2">
+                          {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
+                            <button
+                              key={page}
+                              onClick={() => setCurrentPage(page)}
+                              className={`w-10 h-10 border border-[#111111] font-mono text-xs transition-all ${
+                                currentPage === page
+                                  ? "bg-[#111111] text-[#F9F9F7]"
+                                  : "hover:bg-[#F5F5F5] text-[#111111]"
+                              }`}
+                            >
+                              {page}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                          disabled={currentPage === totalPages}
+                          className="px-4 py-2 border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#111111] hover:text-[#F9F9F7] disabled:opacity-40 disabled:cursor-not-allowed transition-all min-h-[44px]"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </>
+              )
+            ) : (
+              /* ── Chart tab ── */
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-serif text-lg font-bold text-[#111111]">30-Day Price History</p>
+                    <p className="font-mono text-xs text-neutral-500 mt-0.5">Market data via CoinGecko</p>
+                  </div>
+                  <div className="border border-[#111111] px-3 py-1">
+                    <span className="font-mono text-xs text-[#111111]">
+                      {positionsData && (positionsData as any[]).length > 0
+                        ? getTokenName((positionsData as any[])[0].asset)
+                        : 'BTC'}
+                    </span>
+                  </div>
                 </div>
-              );
-            })()}
-          </>
-        )
-      ) : (
-        // Chart Tab Content
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h4 className="text-lg font-semibold text-white">Real Market Price History</h4>
-              <p className="text-sm text-gray-400 mt-1">30-day candlestick chart from CoinGecko</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">Asset:</span>
-              <span className="px-3 py-1 bg-purple-500/20 text-purple-400 rounded-lg text-sm font-medium">
-                {positionsData && (positionsData as any[]).length > 0
-                  ? getTokenName((positionsData as any[])[0].asset)
-                  : 'BTC'}
+
+                {priceDataLoading && (
+                  <div className="border border-[#111111] p-12 text-center newsprint-texture">
+                    <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+                      Fetching market data&hellip;
+                    </p>
+                  </div>
+                )}
+
+                {priceDataError && !priceDataLoading && (
+                  <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+                    <p className="font-mono text-xs text-[#CC0000]">{priceDataError}</p>
+                    <p className="font-mono text-xs text-neutral-500 mt-1">
+                      Showing fallback data. Ensure the backend API is running.
+                    </p>
+                  </div>
+                )}
+
+                {!priceDataLoading && kLineData.length > 0 && (
+                  <>
+                    <div className="border border-[#111111] p-4 bg-[#F9F9F7]">
+                      <ResponsiveContainer width="100%" height={360}>
+                        <ComposedChart data={kLineData}>
+                          <CartesianGrid
+                            strokeDasharray="none"
+                            stroke="#E5E5E0"
+                            vertical={false}
+                          />
+                          <XAxis
+                            dataKey="date"
+                            stroke="#111111"
+                            tick={{ fill: "#737373", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}
+                          />
+                          <YAxis
+                            stroke="#111111"
+                            tick={{ fill: "#737373", fontFamily: "JetBrains Mono, monospace", fontSize: 11 }}
+                            domain={['dataMin - 1000', 'dataMax + 1000']}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: '#F9F9F7',
+                              border: '1px solid #111111',
+                              borderRadius: '0px',
+                              fontFamily: 'JetBrains Mono, monospace',
+                              color: '#111111',
+                              fontSize: '12px',
+                            }}
+                            formatter={(value: any) => [`$${value.toLocaleString()}`, '']}
+                          />
+                          <Legend
+                            wrapperStyle={{
+                              fontFamily: 'JetBrains Mono, monospace',
+                              fontSize: '11px',
+                              color: '#737373',
+                            }}
+                          />
+                          <Bar dataKey="volume" fill="#E5E5E0" name="Volume" />
+                          <Line
+                            type="monotone" dataKey="high"
+                            stroke="#111111" strokeWidth={1.5} dot={false} name="High"
+                            strokeDasharray="4 2"
+                          />
+                          <Line
+                            type="monotone" dataKey="low"
+                            stroke="#CC0000" strokeWidth={1.5} dot={false} name="Low"
+                          />
+                          <Line
+                            type="monotone" dataKey="close"
+                            stroke="#111111" strokeWidth={2.5} dot={false} name="Close"
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* Price stats */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 border border-[#111111] border-r-0">
+                      <div className="border-r border-[#111111] p-4">
+                        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">
+                          Current Price
+                        </p>
+                        <p className="font-mono text-lg font-bold text-[#111111]">
+                          ${kLineData[kLineData.length - 1]?.close.toLocaleString()}
+                        </p>
+                        <p className="font-mono text-xs text-neutral-500 mt-1">
+                          {((kLineData[kLineData.length - 1]?.close - kLineData[0]?.close) / kLineData[0]?.close * 100).toFixed(2)}% (30d)
+                        </p>
+                      </div>
+                      <div className="border-r border-[#111111] p-4">
+                        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">
+                          Period High
+                        </p>
+                        <p className="font-mono text-lg font-bold text-[#111111]">
+                          ${Math.max(...kLineData.map(d => d.high)).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="border-r border-[#111111] p-4">
+                        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">
+                          Period Low
+                        </p>
+                        <p className="font-mono text-lg font-bold text-[#CC0000]">
+                          ${Math.min(...kLineData.map(d => d.low)).toLocaleString()}
+                        </p>
+                      </div>
+                      <div className="p-4">
+                        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 mb-1">
+                          Avg Volume
+                        </p>
+                        <p className="font-mono text-lg font-bold text-[#111111]">
+                          ${(kLineData[kLineData.length - 1]?.volume / 1000).toFixed(0)}K
+                        </p>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right col — Agent Status + Automation (4/12) */}
+        <div className="lg:col-span-4">
+
+          {/* Agent status */}
+          <div className="border-b border-[#111111]">
+            <div className="border-b border-[#111111] px-6 py-3 flex items-center justify-between">
+              <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+                Agent Status
+              </p>
+              <span className="font-mono text-xs border border-[#111111] px-2 py-0.5 bg-[#111111] text-[#F9F9F7]">
+                Active
               </span>
+            </div>
+
+            <div className="divide-y divide-[#E5E5E0]">
+              <div className="flex items-start justify-between px-6 py-4">
+                <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 shrink-0">Contract</p>
+                <p className="font-mono text-xs text-[#111111] text-right break-all ml-4">
+                  {CONTRACTS.AIAgent}
+                </p>
+              </div>
+              <div className="flex items-start justify-between px-6 py-4">
+                <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 shrink-0">Owner</p>
+                <p className="font-mono text-xs text-[#111111] text-right ml-4">
+                  {address?.slice(0, 10)}…
+                </p>
+              </div>
+              <div className="flex items-start justify-between px-6 py-4">
+                <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 shrink-0">
+                  Collateral Ratio
+                </p>
+                <p className="font-mono text-xs font-bold text-[#111111] ml-4">
+                  {stats.borrowedUSDC > 0
+                    ? `${(stats.collateralAmount / stats.borrowedUSDC * 100).toFixed(0)}%`
+                    : "N/A"}
+                </p>
+              </div>
             </div>
           </div>
 
-          {/* Loading State */}
-          {priceDataLoading && (
-            <div className="bg-white/5 border border-white/10 rounded-lg p-8 text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-400 mx-auto mb-4"></div>
-              <p className="text-gray-400">Loading real market data...</p>
-            </div>
-          )}
-
-          {/* Error State */}
-          {priceDataError && !priceDataLoading && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4">
-              <p className="text-red-400 text-sm">
-                ⚠️ {priceDataError}
-              </p>
-              <p className="text-gray-400 text-xs mt-2">
-                Showing fallback data. Make sure the backend API is running.
-              </p>
-            </div>
-          )}
-
-          {/* K-Line Chart */}
-          {!priceDataLoading && kLineData.length > 0 && (
-            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-              <ResponsiveContainer width="100%" height={400}>
-                <ComposedChart data={kLineData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis
-                  dataKey="date"
-                  stroke="#9CA3AF"
-                  style={{ fontSize: '12px' }}
-                />
-                <YAxis
-                  stroke="#9CA3AF"
-                  style={{ fontSize: '12px' }}
-                  domain={['dataMin - 1000', 'dataMax + 1000']}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1F2937',
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                    color: '#fff'
-                  }}
-                  formatter={(value: any) => [`$${value.toLocaleString()}`, '']}
-                />
-                <Legend
-                  wrapperStyle={{ color: '#9CA3AF' }}
-                />
-                <Bar
-                  dataKey="volume"
-                  fill="#8B5CF6"
-                  opacity={0.3}
-                  name="Volume"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="high"
-                  stroke="#10B981"
-                  strokeWidth={2}
-                  dot={false}
-                  name="High"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="low"
-                  stroke="#EF4444"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Low"
-                />
-                <Line
-                  type="monotone"
-                  dataKey="close"
-                  stroke="#3B82F6"
-                  strokeWidth={3}
-                  dot={false}
-                  name="Close"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Price Statistics */}
-          {!priceDataLoading && kLineData.length > 0 && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-              <p className="text-xs text-gray-400 mb-1">Current Price</p>
-              <p className="text-lg font-bold text-white">
-                ${kLineData[kLineData.length - 1]?.close.toLocaleString()}
-              </p>
-              <p className="text-xs text-green-400 mt-1">
-                +{((kLineData[kLineData.length - 1]?.close - kLineData[0]?.close) / kLineData[0]?.close * 100).toFixed(2)}%
-              </p>
-            </div>
-            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-              <p className="text-xs text-gray-400 mb-1">24h High</p>
-              <p className="text-lg font-bold text-green-400">
-                ${Math.max(...kLineData.map(d => d.high)).toLocaleString()}
-              </p>
-            </div>
-            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-              <p className="text-xs text-gray-400 mb-1">24h Low</p>
-              <p className="text-lg font-bold text-red-400">
-                ${Math.min(...kLineData.map(d => d.low)).toLocaleString()}
-              </p>
-            </div>
-            <div className="bg-white/5 border border-white/10 rounded-lg p-4">
-              <p className="text-xs text-gray-400 mb-1">24h Volume</p>
-              <p className="text-lg font-bold text-purple-400">
-                ${(kLineData[kLineData.length - 1]?.volume / 1000).toFixed(0)}K
-              </p>
-            </div>
-            </div>
-          )}
+          {/* AI Automation */}
+          {hasInitializedData && <AutomationSettings />}
         </div>
-      )}
-      </Card>
+      </div>
 
-      {/* Initialize Agent Modal - shown automatically for new addresses */}
+      {/* ── Modals ──────────────────────────────────────────────────────────────── */}
       {showInitModal && (
         <InitializeAgentModal
           onClose={() => setShowInitModal(false)}
@@ -978,14 +926,10 @@ export function AgentDashboard() {
         />
       )}
 
-      {/* Deposit Modal */}
       {showDepositModal && (
         <DepositCollateralModal
           onClose={() => setShowDepositModal(false)}
-          onSuccess={() => {
-            setShowDepositModal(false);
-            refetchAgentState();
-          }}
+          onSuccess={() => { setShowDepositModal(false); refetchAgentState(); }}
           contracts={CONTRACTS}
         />
       )}
@@ -993,6 +937,7 @@ export function AgentDashboard() {
   );
 }
 
+// ─── Deposit Collateral Modal ─────────────────────────────────────────────────
 function DepositCollateralModal({
   onClose,
   onSuccess,
@@ -1005,134 +950,68 @@ function DepositCollateralModal({
   const { address } = useAccount();
   const queryClient = useQueryClient();
   const [amount, setAmount] = useState("");
-  const [currentStep, setCurrentStep] = useState<"idle" | "minting" | "minted" | "approving" | "approved" | "depositing" | "complete">("idle");
+  const [currentStep, setCurrentStep] = useState<
+    "idle" | "minting" | "minted" | "approving" | "approved" | "depositing" | "complete"
+  >("idle");
   const { writeContract, data: hash, isPending, error: writeError, reset } = useWriteContract();
   const { isLoading: isConfirming, isSuccess, error: receiptError } = useWaitForTransactionReceipt({ hash });
 
-  // Check user's RWA token balance
   const { data: tokenBalance, isLoading: isLoadingBalance, error: balanceError } = useReadContract({
     address: contracts.RWAToken,
     abi: ERC20_ABI,
     functionName: "balanceOf",
     args: address ? [address] : undefined,
-    query: {
-      enabled: !!address,
-    }
+    query: { enabled: !!address }
   });
 
-  // Debug balance loading
   useEffect(() => {
     console.log("Balance state:", {
       tokenBalance: tokenBalance ? (tokenBalance as bigint).toString() : "undefined",
-      isLoadingBalance,
-      balanceError: balanceError?.message,
-      address,
+      isLoadingBalance, balanceError: balanceError?.message, address,
       rwaTokenAddress: contracts.RWAToken
     });
   }, [tokenBalance, isLoadingBalance, balanceError, address, contracts.RWAToken]);
 
-  // Handle transaction success
   useEffect(() => {
     if (isSuccess && currentStep === "minting") {
-      console.log("Minting successful! Starting balance refetch...");
       setCurrentStep("minted");
-      // Immediately invalidate and refetch balance
       const refetchInterval = setInterval(() => {
-        console.log("Invalidating balance query...");
         queryClient.invalidateQueries({ queryKey: ['readContract'] });
       }, 1000);
-
-      // Clear interval after 10 seconds
-      setTimeout(() => {
-        console.log("Stopping balance refetch interval");
-        clearInterval(refetchInterval);
-      }, 10000);
-
-      setTimeout(() => {
-        reset();
-      }, 800);
+      setTimeout(() => clearInterval(refetchInterval), 10000);
+      setTimeout(() => reset(), 800);
     } else if (isSuccess && currentStep === "approving") {
-      console.log("Approval successful! Now depositing...");
       setCurrentStep("approved");
-      setTimeout(() => {
-        reset();
-        handleDepositAfterApproval();
-      }, 1000);
+      setTimeout(() => { reset(); handleDepositAfterApproval(); }, 1000);
     } else if (isSuccess && currentStep === "depositing") {
-      console.log("Deposit complete!");
       setCurrentStep("complete");
       setTimeout(() => onSuccess(), 1500);
     }
   }, [isSuccess, currentStep, queryClient]);
 
   const handleMintTokens = () => {
-    if (!amount || parseFloat(amount) <= 0 || !address) {
-      alert("Please enter a valid amount");
-      return;
-    }
+    if (!amount || parseFloat(amount) <= 0 || !address) { alert("Please enter a valid amount"); return; }
     setCurrentStep("minting");
-    writeContract({
-      address: contracts.RWAToken,
-      abi: ERC20_ABI,
-      functionName: "mint",
-      args: [address, parseEther(amount)],
-    });
+    writeContract({ address: contracts.RWAToken, abi: ERC20_ABI, functionName: "mint", args: [address, parseEther(amount)] });
   };
 
   const handleDepositAfterApproval = async () => {
     if (!amount || parseFloat(amount) <= 0) return;
-
     setCurrentStep("depositing");
-    console.log("Depositing after approval:", {
-      agent: contracts.AIAgent,
-      amount: parseEther(amount).toString()
-    });
-
     try {
-      writeContract({
-        address: contracts.AIAgent,
-        abi: AI_AGENT_ABI,
-        functionName: "addCollateral",
-        args: [
-          parseEther(amount),
-        ],
-      });
-    } catch (error) {
-      console.error("Error depositing:", error);
-      setCurrentStep("idle");
-    }
+      writeContract({ address: contracts.AIAgent, abi: AI_AGENT_ABI, functionName: "addCollateral", args: [parseEther(amount)] });
+    } catch (error) { console.error(error); setCurrentStep("idle"); }
   };
 
   const handleApproveAndDeposit = async () => {
-    console.log("handleApproveAndDeposit called, amount:", amount);
-
-    if (!amount || parseFloat(amount) <= 0) {
-      alert("Please enter a valid amount");
-      return;
-    }
-
+    if (!amount || parseFloat(amount) <= 0) { alert("Please enter a valid amount"); return; }
     setCurrentStep("approving");
-    console.log("Approving RWA token:", {
-      token: contracts.RWAToken,
-      spender: contracts.AIAgent,
-      amount: parseEther(amount).toString()
-    });
-
     try {
       writeContract({
-        address: contracts.RWAToken,
-        abi: ERC20_ABI,
-        functionName: "approve",
-        args: [
-          contracts.AIAgent,
-          parseEther(amount),
-        ],
+        address: contracts.RWAToken, abi: ERC20_ABI, functionName: "approve",
+        args: [contracts.AIAgent, parseEther(amount)],
       });
-      console.log("approve writeContract called");
-    } catch (error) {
-      console.error("Error approving:", error);
-      setCurrentStep("idle");
-    }
+    } catch (error) { console.error(error); setCurrentStep("idle"); }
   };
 
   const isLocked = currentStep !== "idle" && currentStep !== "minted";
@@ -1140,22 +1019,30 @@ function DepositCollateralModal({
   const requestedAmount = amount ? parseFloat(amount) : 0;
   const hasInsufficientBalance = requestedAmount > 0 && balance < requestedAmount;
 
-  // Debug logging
-  useEffect(() => {
-    if (currentStep === "minted") {
-      console.log("Balance check:", { balance, requestedAmount, hasInsufficientBalance, tokenBalance: tokenBalance ? (tokenBalance as bigint).toString() : "undefined" });
-    }
-  }, [balance, currentStep, requestedAmount, hasInsufficientBalance, tokenBalance]);
-
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
-      <Card className="p-6 max-w-md w-full mx-4">
-        <h3 className="text-2xl font-bold text-white mb-4">Deposit RWA Collateral</h3>
+    <div className="fixed inset-0 bg-[#111111]/80 flex items-center justify-center z-50 p-4">
+      <div className="border-2 border-[#111111] bg-[#F9F9F7] max-w-md w-full max-h-[90vh] overflow-y-auto">
 
-        <div className="space-y-4">
+        {/* Modal header */}
+        <div className="bg-[#111111] text-[#F9F9F7] px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Wallet className="w-5 h-5" strokeWidth={1.5} />
+            <h3 className="font-serif text-xl font-bold">Deposit RWA Collateral</h3>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={isLocked}
+            className="font-mono text-xs hover:text-neutral-400 transition-colors disabled:opacity-40"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          {/* Amount input */}
           <div>
-            <label className="block text-sm text-gray-400 mb-2">
-              Amount (in tokens)
+            <label className="block font-mono text-xs uppercase tracking-widest text-neutral-500 mb-2">
+              Amount (RWA tokens)
             </label>
             <input
               type="number"
@@ -1163,134 +1050,139 @@ function DepositCollateralModal({
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.0"
               disabled={isLocked}
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
+              className="w-full border-b-2 border-[#111111] bg-transparent px-0 py-2 font-mono text-lg text-[#111111] placeholder-neutral-400 focus:outline-none focus:bg-[#F0F0F0] disabled:opacity-50 transition-colors"
+              style={{ borderRadius: 0 }}
             />
             {tokenBalance !== undefined && (
-              <p className="text-xs text-gray-400 mt-1">
-                Your balance: {formatEther(tokenBalance as bigint)} RWA tokens
+              <p className="font-mono text-xs text-neutral-500 mt-1.5">
+                Balance: {formatEther(tokenBalance as bigint)} RWA
               </p>
             )}
           </div>
 
-          {/* Warning if insufficient balance */}
+          {/* Insufficient balance */}
           {hasInsufficientBalance && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                ⚠️ Insufficient balance! You need {amount} tokens but only have {balance.toFixed(2)}. Click "Get tokens" below to mint more.
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000]">
+                Insufficient balance. You have {balance.toFixed(2)} RWA but requested {amount}. Mint more tokens below.
               </p>
             </div>
           )}
 
           {/* Step indicators */}
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span className={currentStep === "minting" || currentStep === "minted" ? "text-green-400" : ""}>
-              {currentStep === "minted" || ["approving","approved","depositing","complete"].includes(currentStep) ? "✅" : "1."} Get tokens
+          <div className="flex items-center gap-3 font-mono text-xs border border-[#E5E5E0] p-3">
+            <span className={[
+              "minted","approving","approved","depositing","complete"
+            ].includes(currentStep) ? "text-[#111111] font-bold" : "text-neutral-400"}>
+              {["minted","approving","approved","depositing","complete"].includes(currentStep) ? "✓" : "1."} Get tokens
             </span>
-            <span>→</span>
-            <span className={currentStep === "approving" || currentStep === "approved" ? "text-yellow-400" : ["depositing","complete"].includes(currentStep) ? "text-green-400" : ""}>
-              {["approved","depositing","complete"].includes(currentStep) ? "✅" : "2."} Approve
+            <span className="text-neutral-300">→</span>
+            <span className={[
+              "approved","depositing","complete"
+            ].includes(currentStep) ? "text-[#111111] font-bold"
+              : currentStep === "approving" ? "text-[#CC0000] font-bold" : "text-neutral-400"}>
+              {["approved","depositing","complete"].includes(currentStep) ? "✓" : "2."} Approve
             </span>
-            <span>→</span>
-            <span className={currentStep === "depositing" ? "text-yellow-400" : currentStep === "complete" ? "text-green-400" : ""}>
-              {currentStep === "complete" ? "✅" : "3."} Deposit
+            <span className="text-neutral-300">→</span>
+            <span className={currentStep === "complete" ? "text-[#111111] font-bold"
+              : currentStep === "depositing" ? "text-[#CC0000] font-bold" : "text-neutral-400"}>
+              {currentStep === "complete" ? "✓" : "3."} Deposit
             </span>
           </div>
 
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
-            <p className="text-sm text-blue-400">
-              💡 Need more RWA tokens? Mint them for free first, then approve and deposit.
+          {/* Info */}
+          <div className="border-l-4 border-[#111111] pl-4 py-2 bg-[#F5F5F5]">
+            <p className="font-mono text-xs text-[#111111]">
+              Need RWA tokens? Mint them for free first, then approve and deposit.
             </p>
           </div>
 
+          {/* Status messages */}
           {(writeError || receiptError) && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-              <p className="text-sm text-red-400 break-all">
-                ❌ {writeError?.message || receiptError?.message}
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000] break-all">
+                {writeError?.message || receiptError?.message}
               </p>
             </div>
           )}
-
           {currentStep === "minting" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Confirm in wallet..." : "⏳ Minting tokens..."}
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">
+                {isPending ? "Confirm in wallet…" : "Minting tokens…"}
               </p>
             </div>
           )}
           {currentStep === "minted" && (
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-              <p className="text-sm text-green-400">✅ Tokens minted! Now approve below.</p>
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">Tokens minted. Now approve below.</p>
             </div>
           )}
           {currentStep === "approving" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Confirm in wallet..." : "⏳ Approving..."}
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000]">
+                {isPending ? "Confirm in wallet…" : "Approving transfer…"}
               </p>
             </div>
           )}
           {currentStep === "approved" && (
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-              <p className="text-sm text-green-400">
-                ✅ Approved! Depositing...
-              </p>
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">Approved. Depositing…</p>
             </div>
           )}
           {currentStep === "depositing" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Confirm in wallet..." : "⏳ Depositing collateral..."}
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000]">
+                {isPending ? "Confirm in wallet…" : "Depositing collateral…"}
               </p>
             </div>
           )}
           {currentStep === "complete" && (
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-              <p className="text-sm text-green-400">
-                ✅ Collateral deposited successfully!
-              </p>
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">Collateral deposited successfully.</p>
             </div>
           )}
         </div>
 
-        <div className="space-y-2 mt-6">
-          {/* Mint button */}
+        {/* Action buttons */}
+        <div className="border-t border-[#111111] p-6 space-y-2">
           <button
             onClick={handleMintTokens}
-            disabled={isLocked || currentStep === "minted" || ["approving","approved","depositing","complete"].includes(currentStep)}
-            className="w-full px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={isLocked || ["approving","approved","depositing","complete"].includes(currentStep)}
+            className="w-full px-4 py-3 border border-[#111111] bg-transparent text-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#F5F5F5] transition-all disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px]"
           >
-            {currentStep === "minting" ? "Minting..." :
-             currentStep === "minted" || ["approving","approved","depositing","complete"].includes(currentStep) ? "✅ Tokens ready" :
-             `Get ${amount || "1000"} Test RWA Tokens (free)`}
+            {currentStep === "minting" ? "Minting…"
+              : ["minted","approving","approved","depositing","complete"].includes(currentStep) ? "✓ Tokens Ready"
+              : `Get ${amount || "1000"} Test RWA Tokens (free)`}
           </button>
 
           <div className="flex gap-3">
             <button
               onClick={handleApproveAndDeposit}
               disabled={isLocked || hasInsufficientBalance}
-              className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-4 py-3 bg-[#111111] text-[#F9F9F7] border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-white hover:text-[#111111] transition-all disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
             >
-              {currentStep === "idle" || currentStep === "minted" ?
-                (hasInsufficientBalance ? "⚠️ Insufficient Balance" : "Approve & Deposit") :
-               currentStep === "approving" ? "Approving..." :
-               currentStep === "approved" ? "Approved ✓" :
-               currentStep === "depositing" ? "Depositing..." :
-               "Complete ✓"}
+              {currentStep === "idle" || currentStep === "minted"
+                ? (hasInsufficientBalance ? "Insufficient Balance" : "Approve & Deposit")
+                : currentStep === "approving" ? "Approving…"
+                : currentStep === "approved" ? "Approved ✓"
+                : currentStep === "depositing" ? "Depositing…"
+                : "Complete ✓"}
             </button>
             <button
               onClick={onClose}
               disabled={isLocked}
-              className="px-4 py-2 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all disabled:opacity-50"
+              className="px-4 py-3 border border-[#111111] text-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#111111] hover:text-[#F9F9F7] transition-all disabled:opacity-50 min-h-[44px]"
             >
               Cancel
             </button>
           </div>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }
 
+// ─── Initialize Agent Modal ───────────────────────────────────────────────────
 function InitializeAgentModal({
   onClose,
   onSuccess,
@@ -1310,15 +1202,12 @@ function InitializeAgentModal({
   const { writeContract, data: hash, isPending, error: writeError, reset } = useWriteContract();
   const { isSuccess, error: receiptError } = useWaitForTransactionReceipt({ hash });
 
-  // Check user's RWA token balance
   const { data: tokenBalance, isLoading: isLoadingBalance, error: balanceError } = useReadContract({
     address: contracts.RWAToken,
     abi: ERC20_ABI,
     functionName: "balanceOf",
     args: userAddress ? [userAddress] : undefined,
-    query: {
-      enabled: !!userAddress,
-    }
+    query: { enabled: !!userAddress }
   });
 
   const balance = tokenBalance ? parseFloat(formatEther(tokenBalance as bigint)) : 0;
@@ -1327,20 +1216,12 @@ function InitializeAgentModal({
 
   useEffect(() => {
     if (isSuccess && currentStep === "minting") {
-      console.log("Init: Minting successful! Starting balance refetch...");
       setCurrentStep("minted");
-      // Invalidate queries to refetch balance
       const refetchInterval = setInterval(() => {
-        console.log("Init: Invalidating balance query...");
         queryClient.invalidateQueries({ queryKey: ['readContract'] });
       }, 1000);
-
-      setTimeout(() => {
-        console.log("Init: Stopping balance refetch interval");
-        clearInterval(refetchInterval);
-      }, 10000);
-
-      setTimeout(() => { reset(); }, 800);
+      setTimeout(() => clearInterval(refetchInterval), 10000);
+      setTimeout(() => reset(), 800);
     } else if (isSuccess && currentStep === "approving") {
       setCurrentStep("approved");
       setTimeout(() => { reset(); handleInitializeAfterApproval(); }, 1000);
@@ -1351,15 +1232,10 @@ function InitializeAgentModal({
   }, [isSuccess, currentStep, queryClient]);
 
   const handleMintTestTokens = () => {
-    if (!amount || parseFloat(amount) <= 0) {
-      alert("Please enter a valid amount");
-      return;
-    }
+    if (!amount || parseFloat(amount) <= 0) { alert("Please enter a valid amount"); return; }
     setCurrentStep("minting");
     writeContract({
-      address: contracts.RWAToken,
-      abi: ERC20_ABI,
-      functionName: "mint",
+      address: contracts.RWAToken, abi: ERC20_ABI, functionName: "mint",
       args: [userAddress, parseEther(amount)],
     });
   };
@@ -1368,33 +1244,20 @@ function InitializeAgentModal({
     if (!amount || parseFloat(amount) <= 0) return;
     setCurrentStep("initializing");
     writeContract({
-      address: contracts.AIAgent,
-      abi: AI_AGENT_ABI,
-      functionName: "initializeAgent",
+      address: contracts.AIAgent, abi: AI_AGENT_ABI, functionName: "initializeAgent",
       args: [
         contracts.RWAToken,
         parseEther(amount),
-        {
-          owner: userAddress,
-          riskTolerance: 5n,
-          targetROI: 1000n,
-          maxDrawdown: 2000n,
-          strategies: [],
-        },
+        { owner: userAddress, riskTolerance: 5n, targetROI: 1000n, maxDrawdown: 2000n, strategies: [] },
       ],
     });
   };
 
   const handleApproveAndInitialize = () => {
-    if (!amount || parseFloat(amount) <= 0) {
-      alert("Please enter a valid amount");
-      return;
-    }
+    if (!amount || parseFloat(amount) <= 0) { alert("Please enter a valid amount"); return; }
     setCurrentStep("approving");
     writeContract({
-      address: contracts.RWAToken,
-      abi: ERC20_ABI,
-      functionName: "approve",
+      address: contracts.RWAToken, abi: ERC20_ABI, functionName: "approve",
       args: [contracts.AIAgent, parseEther(amount)],
     });
   };
@@ -1402,21 +1265,32 @@ function InitializeAgentModal({
   const isLocked = currentStep !== "idle" && currentStep !== "minted";
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-      <Card className="p-6 max-w-md w-full mx-4 border-purple-500/40">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 bg-purple-500/20 rounded-lg flex items-center justify-center">
-            <Shield className="w-5 h-5 text-purple-400" />
-          </div>
-          <h3 className="text-2xl font-bold text-white">Initialize AI Agent</h3>
-        </div>
-        <p className="text-gray-400 text-sm mb-5">
-          Activate your agent by depositing RWA collateral. Need test tokens? Mint them first for free.
-        </p>
+    <div className="fixed inset-0 bg-[#111111]/80 flex items-center justify-center z-50 p-4">
+      <div className="border-2 border-[#111111] bg-[#F9F9F7] max-w-md w-full max-h-[90vh] overflow-y-auto">
 
-        <div className="space-y-4">
+        {/* Modal header */}
+        <div className="bg-[#111111] text-[#F9F9F7] px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Shield className="w-5 h-5" strokeWidth={1.5} />
+            <h3 className="font-serif text-xl font-bold">Initialize AI Agent</h3>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={isLocked}
+            className="font-mono text-xs hover:text-neutral-400 transition-colors disabled:opacity-40"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          <p className="font-body text-sm text-neutral-600 leading-relaxed">
+            Activate your agent by depositing RWA collateral. Need test tokens? Mint them first for free.
+          </p>
+
+          {/* Amount input */}
           <div>
-            <label className="block text-sm text-gray-400 mb-2">
+            <label className="block font-mono text-xs uppercase tracking-widest text-neutral-500 mb-2">
               RWA Collateral Amount (tokens)
             </label>
             <input
@@ -1425,125 +1299,136 @@ function InitializeAgentModal({
               onChange={(e) => setAmount(e.target.value)}
               placeholder="1000"
               disabled={isLocked}
-              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 disabled:opacity-50"
+              className="w-full border-b-2 border-[#111111] bg-transparent px-0 py-2 font-mono text-lg text-[#111111] placeholder-neutral-400 focus:outline-none focus:bg-[#F0F0F0] disabled:opacity-50 transition-colors"
+              style={{ borderRadius: 0 }}
             />
             {tokenBalance !== undefined && (
-              <p className="text-xs text-gray-400 mt-1">
-                Your balance: {formatEther(tokenBalance as bigint)} RWA tokens
+              <p className="font-mono text-xs text-neutral-500 mt-1.5">
+                Balance: {formatEther(tokenBalance as bigint)} RWA
               </p>
             )}
           </div>
 
-          {/* Warning if insufficient balance */}
+          {/* Insufficient balance */}
           {hasInsufficientBalance && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                ⚠️ Insufficient balance! You need {amount} tokens but only have {balance.toFixed(2)}. Click "Get tokens" below to mint more.
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000]">
+                Insufficient balance. You have {balance.toFixed(2)} RWA but need {amount}. Mint more below.
               </p>
             </div>
           )}
 
           {/* Step indicators */}
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span className={currentStep === "minting" || currentStep === "minted" ? "text-green-400" : ""}>
-              {currentStep === "minted" || ["approving","approved","initializing","complete"].includes(currentStep) ? "✅" : "1."} Get tokens
+          <div className="flex items-center gap-3 font-mono text-xs border border-[#E5E5E0] p-3">
+            <span className={[
+              "minted","approving","approved","initializing","complete"
+            ].includes(currentStep) ? "text-[#111111] font-bold" : "text-neutral-400"}>
+              {["minted","approving","approved","initializing","complete"].includes(currentStep) ? "✓" : "1."} Get tokens
             </span>
-            <span>→</span>
-            <span className={currentStep === "approving" || currentStep === "approved" ? "text-yellow-400" : ["initializing","complete"].includes(currentStep) ? "text-green-400" : ""}>
-              {["approved","initializing","complete"].includes(currentStep) ? "✅" : "2."} Approve
+            <span className="text-neutral-300">→</span>
+            <span className={["approved","initializing","complete"].includes(currentStep) ? "text-[#111111] font-bold"
+              : currentStep === "approving" ? "text-[#CC0000] font-bold" : "text-neutral-400"}>
+              {["approved","initializing","complete"].includes(currentStep) ? "✓" : "2."} Approve
             </span>
-            <span>→</span>
-            <span className={currentStep === "initializing" ? "text-yellow-400" : currentStep === "complete" ? "text-green-400" : ""}>
-              {currentStep === "complete" ? "✅" : "3."} Initialize
+            <span className="text-neutral-300">→</span>
+            <span className={currentStep === "complete" ? "text-[#111111] font-bold"
+              : currentStep === "initializing" ? "text-[#CC0000] font-bold" : "text-neutral-400"}>
+              {currentStep === "complete" ? "✓" : "3."} Initialize
             </span>
           </div>
 
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-sm text-blue-400 space-y-1">
-            <p>Agent defaults: Risk 5/10 · Target ROI 10% · Max Drawdown 20%</p>
+          {/* Agent defaults */}
+          <div className="border-l-4 border-[#111111] pl-4 py-2 bg-[#F5F5F5]">
+            <p className="font-mono text-xs text-[#111111]">
+              Agent defaults: Risk 5/10 · Target ROI 10% · Max Drawdown 20%
+            </p>
           </div>
 
+          {/* Error */}
           {(writeError || receiptError) && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-              <p className="text-sm text-red-400 break-all">
-                Error: {writeError?.message || receiptError?.message}
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000] break-all">
+                {writeError?.message || receiptError?.message}
               </p>
             </div>
           )}
 
+          {/* Status messages */}
           {currentStep === "minting" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Confirm in wallet..." : "⏳ Minting test tokens..."}
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">
+                {isPending ? "Confirm in wallet…" : "Minting test tokens…"}
               </p>
             </div>
           )}
           {currentStep === "minted" && (
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-              <p className="text-sm text-green-400">✅ {amount} RWA tokens minted! Now approve below.</p>
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">
+                {amount} RWA tokens minted. Now approve below.
+              </p>
             </div>
           )}
           {currentStep === "approving" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Confirm in wallet..." : "⏳ Approving token transfer..."}
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000]">
+                {isPending ? "Confirm in wallet…" : "Approving token transfer…"}
               </p>
             </div>
           )}
           {currentStep === "approved" && (
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-              <p className="text-sm text-green-400">✅ Approved! Initializing agent...</p>
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">Approved. Initializing agent…</p>
             </div>
           )}
           {currentStep === "initializing" && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-              <p className="text-sm text-yellow-400">
-                {isPending ? "⏳ Confirm in wallet..." : "⏳ Initializing agent on-chain..."}
+            <div className="border-l-4 border-[#CC0000] pl-4 py-2">
+              <p className="font-mono text-xs text-[#CC0000]">
+                {isPending ? "Confirm in wallet…" : "Initializing agent on-chain…"}
               </p>
             </div>
           )}
           {currentStep === "complete" && (
-            <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-              <p className="text-sm text-green-400">✅ Agent initialized successfully!</p>
+            <div className="border-l-4 border-[#111111] pl-4 py-2">
+              <p className="font-mono text-xs text-[#111111]">Agent initialized successfully.</p>
             </div>
           )}
         </div>
 
-        <div className="space-y-2 mt-6">
-          {/* Step 1: Mint test tokens */}
+        {/* Action buttons */}
+        <div className="border-t border-[#111111] p-6 space-y-2">
           <button
             onClick={handleMintTestTokens}
-            disabled={isLocked || currentStep === "minted" || ["approving","approved","initializing","complete"].includes(currentStep)}
-            className="w-full px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            disabled={isLocked || ["approving","approved","initializing","complete"].includes(currentStep)}
+            className="w-full px-4 py-3 border border-[#111111] bg-transparent text-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#F5F5F5] transition-all disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px]"
           >
-            {currentStep === "minting" ? "Minting..." :
-             currentStep === "minted" || ["approving","approved","initializing","complete"].includes(currentStep) ? "✅ Tokens ready" :
-             `Get ${amount || "1000"} Test RWA Tokens (free)`}
+            {currentStep === "minting" ? "Minting…"
+              : ["minted","approving","approved","initializing","complete"].includes(currentStep) ? "✓ Tokens Ready"
+              : `Get ${amount || "1000"} Test RWA Tokens (free)`}
           </button>
 
-          {/* Step 2+3: Approve & Initialize */}
           <div className="flex gap-2">
             <button
               onClick={handleApproveAndInitialize}
               disabled={isLocked || hasInsufficientBalance}
-              className="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-pink-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-4 py-3 bg-[#111111] text-[#F9F9F7] border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-white hover:text-[#111111] transition-all disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
             >
-              {currentStep === "idle" || currentStep === "minted" ?
-                (hasInsufficientBalance ? "⚠️ Insufficient Balance" : "Approve & Initialize") :
-               currentStep === "approving" ? "Approving..." :
-               currentStep === "approved" ? "Approved ✓" :
-               currentStep === "initializing" ? "Initializing..." :
-               "Complete ✓"}
+              {currentStep === "idle" || currentStep === "minted"
+                ? (hasInsufficientBalance ? "Insufficient Balance" : "Approve & Initialize")
+                : currentStep === "approving" ? "Approving…"
+                : currentStep === "approved" ? "Approved ✓"
+                : currentStep === "initializing" ? "Initializing…"
+                : "Complete ✓"}
             </button>
             <button
               onClick={onClose}
               disabled={isLocked}
-              className="px-4 py-2 bg-white/10 text-white rounded-lg font-semibold hover:bg-white/20 transition-all disabled:opacity-50"
+              className="px-4 py-3 border border-[#111111] text-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-[#111111] hover:text-[#F9F9F7] transition-all disabled:opacity-50 min-h-[44px]"
             >
               Later
             </button>
           </div>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }
