@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
+import { NetworkProvider } from "@/contexts/NetworkContext";
 
 export const metadata: Metadata = {
   title: "RACE Protocol — RWA-Powered Autonomous Commerce",
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <Providers>{children}</Providers>
+        <Providers>
+          <NetworkProvider>{children}</NetworkProvider>
+        </Providers>
       </body>
     </html>
   );

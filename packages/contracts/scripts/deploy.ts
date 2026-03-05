@@ -1,4 +1,6 @@
 import { ethers } from "hardhat";
+import * as fs from "fs";
+import * as path from "path";
 
 async function main() {
   console.log("Deploying RACE Protocol contracts...");
@@ -6,6 +8,11 @@ async function main() {
   // Get deployer
   const [deployer] = await ethers.getSigners();
   console.log("Deploying with account:", deployer.address);
+
+  // Get network info
+  const network = await ethers.provider.getNetwork();
+  const networkName = process.env.HARDHAT_NETWORK || "unknown";
+  console.log(`Network: ${networkName} (Chain ID: ${network.chainId})`);
 
   // Deploy RWAVault
   console.log("\n1. Deploying RWAVault...");
@@ -124,39 +131,62 @@ async function main() {
 
   // Summary
   console.log("\n=== Deployment Summary ===");
+  console.log("Network:", networkName);
+  console.log("Chain ID:", network.chainId.toString());
   console.log("RWAVault:", rwaVaultAddress);
   console.log("Mock USDC:", usdcAddress);
   console.log("LendingPool:", lendingPoolAddress);
   console.log("AIAgent:", aiAgentAddress);
+  console.log("Controller:", deployer.address);
   console.log("RiskManager:", riskManagerAddress);
   console.log("SimpleDEX:", simpleDEXAddress);
   console.log("WETH:", wethAddress);
   console.log("WBTC:", wbtcAddress);
   console.log("RWA Token:", rwaTokenAddress);
-  console.log("\nSave these addresses for frontend configuration!");
 
   // Save deployment info
-  const network = await ethers.provider.getNetwork();
   const deploymentInfo = {
-    network: network.name,
-    chainId: network.chainId.toString(), // Convert BigInt to string
+    network: networkName,
+    chainId: network.chainId.toString(),
     deployer: deployer.address,
+    timestamp: new Date().toISOString(),
     contracts: {
       RWAVault: rwaVaultAddress,
       USDC: usdcAddress,
       LendingPool: lendingPoolAddress,
       AIAgent: aiAgentAddress,
+      Controller: deployer.address,
       RiskManager: riskManagerAddress,
       SimpleDEX: simpleDEXAddress,
       WETH: wethAddress,
       WBTC: wbtcAddress,
       RWAToken: rwaTokenAddress,
     },
-    timestamp: new Date().toISOString(),
   };
 
-  console.log("\nDeployment Info:");
-  console.log(JSON.stringify(deploymentInfo, null, 2));
+  // Save to deployments directory
+  const deploymentsDir = path.join(__dirname, "..", "deployments");
+  if (!fs.existsSync(deploymentsDir)) {
+    fs.mkdirSync(deploymentsDir, { recursive: true });
+  }
+
+  const deploymentFile = path.join(deploymentsDir, `${networkName}.json`);
+  fs.writeFileSync(deploymentFile, JSON.stringify(deploymentInfo, null, 2));
+  console.log(`\n✅ Deployment info saved to: ${deploymentFile}`);
+
+  // Generate .env snippet
+  console.log("\n=== .env Configuration ===");
+  console.log(`# ${networkName.toUpperCase()} TESTNET`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_RWA_VAULT_ADDRESS=${rwaVaultAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_AI_AGENT_ADDRESS=${aiAgentAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_CONTROLLER_ADDRESS=${deployer.address}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_RISK_MANAGER_ADDRESS=${riskManagerAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_USDC_ADDRESS=${usdcAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_RWA_TOKEN_ADDRESS=${rwaTokenAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_LENDING_POOL_ADDRESS=${lendingPoolAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_SIMPLE_DEX_ADDRESS=${simpleDEXAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_WETH_ADDRESS=${wethAddress}`);
+  console.log(`NEXT_PUBLIC_${networkName.toUpperCase()}_WBTC_ADDRESS=${wbtcAddress}`);
 }
 
 main()

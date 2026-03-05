@@ -4,12 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseEther, formatEther } from "viem";
 import { Shield, Zap, TrendingUp, AlertTriangle, Clock, DollarSign } from "lucide-react";
-
-// Contract addresses
-const CONTRACTS = {
-  AIAgent: process.env.NEXT_PUBLIC_AI_AGENT_ADDRESS as `0x${string}`,
-  Controller: process.env.NEXT_PUBLIC_CONTROLLER_ADDRESS as `0x${string}`,
-};
+import { useNetwork } from '@/contexts/NetworkContext';
 
 // Extended ABI for automation functions
 const AI_AGENT_AUTOMATION_ABI = [
@@ -111,6 +106,7 @@ const STRATEGIES = [
 
 export function AutomationSettings() {
   const { address, isConnected } = useAccount();
+  const { contracts } = useNetwork();
 
   const [isEnabled, setIsEnabled] = useState(false);
   const [maxBorrow, setMaxBorrow] = useState("100");
@@ -119,7 +115,7 @@ export function AutomationSettings() {
   const [showSettings, setShowSettings] = useState(false);
 
   const { data: preferencesData, refetch: refetchPreferences } = useReadContract({
-    address: CONTRACTS.AIAgent,
+    address: contracts.AIAgent,
     abi: AI_AGENT_AUTOMATION_ABI,
     functionName: "getUserPreferences",
     args: address ? [address as `0x${string}`] : undefined,
@@ -127,7 +123,7 @@ export function AutomationSettings() {
   });
 
   const { data: canRunNow } = useReadContract({
-    address: CONTRACTS.AIAgent,
+    address: contracts.AIAgent,
     abi: AI_AGENT_AUTOMATION_ABI,
     functionName: "canMakeAutomatedDecision",
     args: address ? [address as `0x${string}`] : undefined,
@@ -152,27 +148,27 @@ export function AutomationSettings() {
   }, [isSuccess, refetchPreferences]);
 
   const handleEnableAutomation = async () => {
-    if (!CONTRACTS.Controller) return;
+    if (!contracts.Controller) return;
     try {
       writeContract({
-        address: CONTRACTS.AIAgent,
+        address: contracts.AIAgent,
         abi: AI_AGENT_AUTOMATION_ABI,
         functionName: "enableAutomation",
-        args: [CONTRACTS.Controller, parseEther(maxBorrow), BigInt(cooldown), strategy],
+        args: [contracts.Controller, parseEther(maxBorrow), BigInt(cooldown), strategy],
       });
     } catch (error) { console.error(error); }
   };
 
   const handleDisableAutomation = async () => {
     try {
-      writeContract({ address: CONTRACTS.AIAgent, abi: AI_AGENT_AUTOMATION_ABI, functionName: "disableAutomation" });
+      writeContract({ address: contracts.AIAgent, abi: AI_AGENT_AUTOMATION_ABI, functionName: "disableAutomation" });
     } catch (error) { console.error(error); }
   };
 
   const handleUpdateAutomation = async () => {
     try {
       writeContract({
-        address: CONTRACTS.AIAgent,
+        address: contracts.AIAgent,
         abi: AI_AGENT_AUTOMATION_ABI,
         functionName: "updateAutomation",
         args: [parseEther(maxBorrow), BigInt(cooldown), strategy],
@@ -377,7 +373,7 @@ export function AutomationSettings() {
           </div>
 
           {/* Error states */}
-          {!CONTRACTS.Controller && (
+          {!contracts.Controller && (
             <div className="border-l-4 border-[#CC0000] pl-4 py-2">
               <p className="font-mono text-xs text-[#CC0000]">
                 Controller address not configured. Set NEXT_PUBLIC_CONTROLLER_ADDRESS and restart.
@@ -409,7 +405,7 @@ export function AutomationSettings() {
             {!isEnabled ? (
               <button
                 onClick={handleEnableAutomation}
-                disabled={isPending || isConfirming || !CONTRACTS.Controller}
+                disabled={isPending || isConfirming || !contracts.Controller}
                 className="flex-1 px-6 py-3 bg-[#111111] text-[#F9F9F7] border border-[#111111] font-mono text-xs uppercase tracking-widest hover:bg-white hover:text-[#111111] transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed min-h-[44px]"
               >
                 {isPending || isConfirming ? "Processing..." : "Enable Automation"}

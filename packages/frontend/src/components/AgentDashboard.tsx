@@ -7,17 +7,8 @@ import { Activity, TrendingUp, Shield, Wallet, Plus, BarChart3, RefreshCw } from
 import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { AutomationSettings } from "./AutomationSettings";
 import { useQueryClient } from '@tanstack/react-query';
-
-// Contract addresses from environment variables
-const CONTRACTS = {
-  RWAVault: process.env.NEXT_PUBLIC_RWA_VAULT_ADDRESS as `0x${string}`,
-  AIAgent: process.env.NEXT_PUBLIC_AI_AGENT_ADDRESS as `0x${string}`,
-  RiskManager: process.env.NEXT_PUBLIC_RISK_MANAGER_ADDRESS as `0x${string}`,
-  USDC: process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`,
-  RWAToken: process.env.NEXT_PUBLIC_RWA_TOKEN_ADDRESS as `0x${string}`,
-};
-
-console.log("Contract addresses:", CONTRACTS);
+import { useNetwork } from '@/contexts/NetworkContext';
+import { ContractAddresses } from '@/config/networks';
 
 // AIAgent ABI - Multi-User Functions
 const AI_AGENT_ABI = [
@@ -211,18 +202,19 @@ const ERC20_ABI = [
   },
 ] as const;
 
-function getTokenName(tokenAddress: string): string {
+function getTokenName(tokenAddress: string, contracts: any): string {
   const address = tokenAddress.toLowerCase();
   const tokenMap: { [key: string]: string } = {
-    [process.env.NEXT_PUBLIC_WETH_ADDRESS?.toLowerCase() || '']: 'ETH',
-    [process.env.NEXT_PUBLIC_WBTC_ADDRESS?.toLowerCase() || '']: 'BTC',
-    [process.env.NEXT_PUBLIC_USDC_ADDRESS?.toLowerCase() || '']: 'USDC',
+    [contracts.WETH?.toLowerCase() || '']: 'ETH',
+    [contracts.WBTC?.toLowerCase() || '']: 'BTC',
+    [contracts.USDC?.toLowerCase() || '']: 'USDC',
   };
   return tokenMap[address] || 'Unknown';
 }
 
 export function AgentDashboard() {
   const { address, isConnected, chain } = useAccount();
+  const { contracts } = useNetwork();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [showInitModal, setShowInitModal] = useState(false);
@@ -234,7 +226,7 @@ export function AgentDashboard() {
   const itemsPerPage = 5;
 
   const { data: agentStateData, refetch: refetchAgentState, error, isLoading } = useReadContract({
-    address: CONTRACTS.AIAgent,
+    address: contracts.AIAgent,
     abi: AI_AGENT_ABI,
     functionName: "getUserState",
     args: address ? [address as `0x${string}`] : undefined,
@@ -242,7 +234,7 @@ export function AgentDashboard() {
   });
 
   const { data: hasInitializedData, refetch: refetchHasInitialized } = useReadContract({
-    address: CONTRACTS.AIAgent,
+    address: contracts.AIAgent,
     abi: AI_AGENT_ABI,
     functionName: "hasInitialized",
     args: address ? [address as `0x${string}`] : undefined,
@@ -250,7 +242,7 @@ export function AgentDashboard() {
   });
 
   const { data: positionsData, refetch: refetchPositions } = useReadContract({
-    address: CONTRACTS.AIAgent,
+    address: contracts.AIAgent,
     abi: AI_AGENT_ABI,
     functionName: "getUserPositions",
     args: address ? [address as `0x${string}`] : undefined,
@@ -290,7 +282,7 @@ export function AgentDashboard() {
         let symbol = 'BTC';
         if (positionsData && (positionsData as any[]).length > 0) {
           const firstPosition = (positionsData as any[])[0];
-          const tokenName = getTokenName(firstPosition.asset);
+          const tokenName = getTokenName(firstPosition.asset, contracts);
           symbol = tokenName === 'ETH' ? 'ETH' : 'BTC';
         }
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
@@ -320,7 +312,7 @@ export function AgentDashboard() {
   }, [activeTab, positionsData]);
 
   useEffect(() => {
-    console.log("Contract Address:", CONTRACTS.AIAgent);
+    console.log("Contract Address:", contracts.AIAgent);
     console.log("Connected Chain:", chain?.id, chain?.name);
     console.log("Agent State Data:", agentStateData?.toString());
     console.log("Error:", error);
@@ -431,7 +423,7 @@ export function AgentDashboard() {
             <span className="font-bold text-[#111111]">Chain:</span> {chain?.name} (ID: {chain?.id})
           </p>
           <p className="font-mono text-xs text-neutral-600 truncate">
-            <span className="font-bold text-[#111111]">Contract:</span> {CONTRACTS.AIAgent}
+            <span className="font-bold text-[#111111]">Contract:</span> {contracts.AIAgent}
           </p>
           <p className="font-mono text-xs text-neutral-600">
             <span className="font-bold text-[#111111]">Agent:</span>{" "}
@@ -625,7 +617,7 @@ export function AgentDashboard() {
                       const currentPositions = positions.slice(startIndex, startIndex + itemsPerPage);
 
                       return currentPositions.map((position: any, index: number) => {
-                        const tokenName = getTokenName(position.asset as string);
+                        const tokenName = getTokenName(position.asset as string, contracts);
                         const amount = Number(formatEther(position.amount || BigInt(0)));
                         const rawEntryPrice = Number(position.entryPrice || BigInt(0));
                         const rawStopLoss = Number(position.stopLoss || BigInt(0));
@@ -742,7 +734,7 @@ export function AgentDashboard() {
                   <div className="border border-[#111111] px-3 py-1">
                     <span className="font-mono text-xs text-[#111111]">
                       {positionsData && (positionsData as any[]).length > 0
-                        ? getTokenName((positionsData as any[])[0].asset)
+                        ? getTokenName((positionsData as any[])[0].asset, contracts)
                         : 'BTC'}
                     </span>
                   </div>
@@ -884,7 +876,7 @@ export function AgentDashboard() {
               <div className="flex items-start justify-between px-6 py-4">
                 <p className="font-mono text-xs uppercase tracking-widest text-neutral-500 shrink-0">Contract</p>
                 <p className="font-mono text-xs text-[#111111] text-right break-all ml-4">
-                  {CONTRACTS.AIAgent}
+                  {contracts.AIAgent}
                 </p>
               </div>
               <div className="flex items-start justify-between px-6 py-4">
@@ -921,7 +913,7 @@ export function AgentDashboard() {
             refetchAgentState();
             refetchPositions();
           }}
-          contracts={CONTRACTS}
+          contracts={contracts}
           userAddress={address!}
         />
       )}
@@ -930,7 +922,7 @@ export function AgentDashboard() {
         <DepositCollateralModal
           onClose={() => setShowDepositModal(false)}
           onSuccess={() => { setShowDepositModal(false); refetchAgentState(); }}
-          contracts={CONTRACTS}
+          contracts={contracts}
         />
       )}
     </div>
@@ -945,7 +937,7 @@ function DepositCollateralModal({
 }: {
   onClose: () => void;
   onSuccess: () => void;
-  contracts: typeof CONTRACTS;
+  contracts: ContractAddresses;
 }) {
   const { address } = useAccount();
   const queryClient = useQueryClient();
@@ -1191,7 +1183,7 @@ function InitializeAgentModal({
 }: {
   onClose: () => void;
   onSuccess: () => void;
-  contracts: typeof CONTRACTS;
+  contracts: ContractAddresses;
   userAddress: `0x${string}`;
 }) {
   const queryClient = useQueryClient();
