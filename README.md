@@ -392,10 +392,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔗 Links
 
-- **Website**: [https://race-protocol.io](https://race-protocol.io)
-- **Documentation**: [https://docs.race-protocol.io](https://docs.race-protocol.io)
-- **Twitter**: [@RACEProtocol](https://twitter.com/RACEProtocol)
-- **Discord**: [Join our community](https://discord.gg/race-protocol)
+- **Website**: [https://race-frontend.vercel.app/](https://race-frontend.vercel.app/)
+- **Twitter**: [@DawneraGames](https://x.com/DawneraGames)
 
 ---
 
@@ -403,7 +401,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Built with ❤️ by the RACE Protocol Team**
 
-[![GitHub stars](https://img.shields.io/github/stars/yourusername/race-protocol?style=social)](https://github.com/yourusername/race-protocol)
+[![GitHub stars](https://img.shields.io/github/stars/buct2012dbl/race-protocol?style=social)](https://github.com/buct2012dbl/race-protocol)
 [![Twitter Follow](https://img.shields.io/twitter/follow/RACEProtocol?style=social)](https://twitter.com/RACEProtocol)
 
 </div>
